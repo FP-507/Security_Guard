@@ -1,0 +1,729 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Security Guard</title>
+<style>
+/* ── Reset & Base ──────────────────────────────────── */
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#06080d;--bg2:#0c1017;--surface:#111820;--surface2:#19212d;
+  --border:#1e2a3a;--border2:#2a3a4e;
+  --text:#e2e8f0;--text2:#94a3b8;--text3:#64748b;
+  --accent:#3b82f6;--accent2:#2563eb;
+  --critical:#ef4444;--high:#f97316;--medium:#eab308;--low:#3b82f6;--info:#6b7280;
+  --green:#22c55e;--green2:#16a34a;
+  --red:#ef4444;
+  --radius:10px;--radius2:14px;
+  --shadow:0 4px 24px rgba(0,0,0,.4);
+  --glow-blue:0 0 20px rgba(59,130,246,.15);
+  --glow-green:0 0 20px rgba(34,197,94,.15);
+  --glow-red:0 0 20px rgba(239,68,68,.15);
+}
+html{font-size:15px}
+body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;overflow-x:hidden}
+a{color:var(--accent);text-decoration:none}
+button{cursor:pointer;font-family:inherit}
+
+/* ── Scrollbar ────────────────────────────────────── */
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-track{background:var(--bg2)}
+::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px}
+::-webkit-scrollbar-thumb:hover{background:var(--text3)}
+
+/* ── Layout ───────────────────────────────────────── */
+.app{display:flex;flex-direction:column;min-height:100vh}
+.topbar{
+  background:var(--surface);border-bottom:1px solid var(--border);
+  padding:.75rem 2rem;display:flex;align-items:center;gap:1rem;
+  position:sticky;top:0;z-index:100;backdrop-filter:blur(12px);
+}
+.topbar .logo{display:flex;align-items:center;gap:.6rem;font-weight:700;font-size:1.15rem;letter-spacing:-.01em}
+.topbar .logo svg{width:28px;height:28px}
+.topbar .version{font-size:.7rem;color:var(--text3);background:var(--surface2);padding:2px 8px;border-radius:20px;border:1px solid var(--border)}
+.main{flex:1;padding:1.5rem 2rem 3rem;max-width:1400px;width:100%;margin:0 auto}
+
+/* ── Scan Form ────────────────────────────────────── */
+.scan-form{
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--radius2);
+  padding:1.75rem;margin-bottom:1.5rem;box-shadow:var(--shadow);
+}
+.scan-form h2{font-size:1.1rem;margin-bottom:1rem;display:flex;align-items:center;gap:.5rem}
+.input-row{display:flex;gap:.75rem;margin-bottom:1rem}
+.input-row input[type=text]{
+  flex:1;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);
+  padding:.7rem 1rem;color:var(--text);font-size:.95rem;transition:border .2s;
+}
+.input-row input:focus{outline:none;border-color:var(--accent);box-shadow:var(--glow-blue)}
+.btn{
+  padding:.7rem 1.5rem;border-radius:var(--radius);border:none;font-weight:600;
+  font-size:.9rem;transition:all .2s;display:inline-flex;align-items:center;gap:.5rem;
+}
+.btn-primary{background:var(--accent);color:#fff}
+.btn-primary:hover{background:var(--accent2);box-shadow:var(--glow-blue)}
+.btn-primary:disabled{opacity:.5;cursor:not-allowed}
+.btn-ghost{background:transparent;color:var(--text2);border:1px solid var(--border)}
+.btn-ghost:hover{border-color:var(--text3);color:var(--text)}
+
+.scanner-toggles{display:flex;flex-wrap:wrap;gap:.5rem}
+.scanner-toggle{
+  display:flex;align-items:center;gap:.4rem;padding:.4rem .8rem;
+  background:var(--bg);border:1px solid var(--border);border-radius:20px;
+  font-size:.8rem;color:var(--text2);cursor:pointer;transition:all .2s;user-select:none;
+}
+.scanner-toggle.active{background:rgba(59,130,246,.12);border-color:var(--accent);color:var(--accent)}
+.scanner-toggle .dot{width:6px;height:6px;border-radius:50%;background:var(--border2);transition:background .2s}
+.scanner-toggle.active .dot{background:var(--accent)}
+
+/* ── Progress ─────────────────────────────────────── */
+.progress-section{
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--radius2);
+  padding:1.5rem;margin-bottom:1.5rem;display:none;
+}
+.progress-section.visible{display:block}
+.progress-bar-track{width:100%;height:8px;background:var(--bg);border-radius:4px;overflow:hidden;margin:.75rem 0}
+.progress-bar-fill{height:100%;background:linear-gradient(90deg,var(--accent),var(--green));border-radius:4px;transition:width .4s ease;width:0}
+.progress-label{font-size:.85rem;color:var(--text2);display:flex;justify-content:space-between}
+
+/* ── Dashboard ────────────────────────────────────── */
+.dashboard{display:none}
+.dashboard.visible{display:block}
+
+/* Score Card */
+.score-card{
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--radius2);
+  padding:2rem;text-align:center;margin-bottom:1.5rem;position:relative;overflow:hidden;
+}
+.score-card::before{
+  content:'';position:absolute;top:0;left:0;right:0;height:3px;
+  background:linear-gradient(90deg,var(--critical),var(--high),var(--medium),var(--green));
+}
+.score-ring{width:160px;height:160px;margin:0 auto 1rem;position:relative}
+.score-ring svg{transform:rotate(-90deg)}
+.score-ring .ring-bg{fill:none;stroke:var(--border);stroke-width:8}
+.score-ring .ring-fill{fill:none;stroke-width:8;stroke-linecap:round;transition:stroke-dashoffset 1.5s ease,stroke .5s}
+.score-ring .score-text{
+  position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+  font-size:2.5rem;font-weight:800;letter-spacing:-.02em;
+}
+.score-ring .score-grade{
+  position:absolute;top:50%;left:50%;transform:translate(-50%,60%);
+  font-size:.85rem;color:var(--text2);
+}
+.score-meta{display:flex;justify-content:center;gap:2rem;margin-top:1rem;font-size:.85rem;color:var(--text2)}
+
+/* Severity Cards */
+.severity-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:.75rem;margin-bottom:1.5rem}
+.sev-card{
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+  padding:1rem;text-align:center;position:relative;overflow:hidden;
+}
+.sev-card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px}
+.sev-card.sev-critical::before{background:var(--critical)}
+.sev-card.sev-high::before{background:var(--high)}
+.sev-card.sev-medium::before{background:var(--medium)}
+.sev-card.sev-low::before{background:var(--low)}
+.sev-card.sev-info::before{background:var(--info)}
+.sev-card .count{font-size:1.8rem;font-weight:800}
+.sev-card.sev-critical .count{color:var(--critical)}
+.sev-card.sev-high .count{color:var(--high)}
+.sev-card.sev-medium .count{color:var(--medium)}
+.sev-card.sev-low .count{color:var(--low)}
+.sev-card.sev-info .count{color:var(--info)}
+.sev-card .label{font-size:.7rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text3);margin-top:.2rem}
+
+/* Two Column Layout */
+.two-col{display:grid;grid-template-columns:1fr 1fr;gap:1.5rem;margin-bottom:1.5rem}
+
+/* Panels */
+.panel{
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--radius2);
+  padding:1.25rem;
+}
+.panel h3{font-size:.95rem;margin-bottom:1rem;display:flex;align-items:center;gap:.5rem;color:var(--text)}
+.panel h3 .icon{font-size:1.1rem}
+
+/* Category Chart */
+.cat-bar{display:flex;align-items:center;gap:.75rem;padding:.45rem 0;border-bottom:1px solid var(--border)}
+.cat-bar:last-child{border:none}
+.cat-bar .cat-name{flex:1;font-size:.8rem;color:var(--text2);min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cat-bar .cat-track{width:120px;height:6px;background:var(--bg);border-radius:3px;overflow:hidden;flex-shrink:0}
+.cat-bar .cat-fill{height:100%;border-radius:3px;background:var(--accent)}
+.cat-bar .cat-count{width:30px;text-align:right;font-size:.8rem;font-weight:600;color:var(--text);flex-shrink:0}
+
+/* Scanner Cards */
+.scanner-card{
+  display:flex;align-items:center;gap:.75rem;padding:.6rem 0;border-bottom:1px solid var(--border);
+}
+.scanner-card:last-child{border:none}
+.scanner-icon{
+  width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;
+  font-size:.85rem;flex-shrink:0;
+}
+.scanner-icon.clean{background:rgba(34,197,94,.12);color:var(--green)}
+.scanner-icon.warn{background:rgba(249,115,22,.12);color:var(--high)}
+.scanner-info{flex:1;min-width:0}
+.scanner-info .sname{font-size:.85rem;font-weight:600}
+.scanner-info .sdesc{font-size:.72rem;color:var(--text3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.scanner-stats{text-align:right;flex-shrink:0}
+.scanner-stats .scount{font-size:.9rem;font-weight:700}
+.scanner-stats .stime{font-size:.7rem;color:var(--text3)}
+
+/* Roadmap */
+.roadmap{
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--radius2);
+  padding:1.25rem;margin-bottom:1.5rem;
+}
+.roadmap h3{font-size:.95rem;margin-bottom:1rem}
+.roadmap-step{display:flex;gap:1rem;padding:.75rem 0;border-bottom:1px solid var(--border)}
+.roadmap-step:last-child{border:none}
+.step-circle{
+  width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+  font-size:.75rem;font-weight:700;color:#fff;flex-shrink:0;
+}
+.step-circle.crit{background:var(--critical)}
+.step-circle.high{background:var(--high)}
+.step-circle.med{background:var(--medium)}
+.step-circle.ok{background:var(--green)}
+.step-content{flex:1}
+.step-content strong{font-size:.9rem}
+.step-content p{font-size:.8rem;color:var(--text2);margin-top:.2rem}
+
+/* ── Findings Table ───────────────────────────────── */
+.findings-section{
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--radius2);
+  padding:1.25rem;
+}
+.findings-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap;gap:.75rem}
+.findings-header h3{font-size:.95rem}
+
+.filters{display:flex;gap:.5rem;flex-wrap:wrap}
+.filter-btn{
+  padding:.35rem .7rem;font-size:.75rem;border-radius:20px;border:1px solid var(--border);
+  background:transparent;color:var(--text2);transition:all .2s;
+}
+.filter-btn:hover,.filter-btn.active{background:rgba(59,130,246,.12);border-color:var(--accent);color:var(--accent)}
+.filter-btn .fcount{margin-left:.3rem;opacity:.6}
+
+.search-input{
+  background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);
+  padding:.45rem .75rem;color:var(--text);font-size:.85rem;width:220px;
+}
+.search-input:focus{outline:none;border-color:var(--accent)}
+
+.finding-list{max-height:70vh;overflow-y:auto}
+
+.finding-item{
+  border:1px solid var(--border);border-radius:var(--radius);margin-bottom:.5rem;
+  overflow:hidden;transition:border-color .2s;
+}
+.finding-item:hover{border-color:var(--border2)}
+.finding-item-header{
+  display:flex;align-items:center;gap:.75rem;padding:.75rem 1rem;cursor:pointer;
+  transition:background .15s;
+}
+.finding-item-header:hover{background:rgba(255,255,255,.02)}
+.sev-badge{
+  padding:.15rem .55rem;border-radius:4px;font-size:.65rem;font-weight:700;
+  text-transform:uppercase;letter-spacing:.04em;flex-shrink:0;min-width:62px;text-align:center;
+}
+.sev-badge.b-critical{background:rgba(239,68,68,.15);color:var(--critical);border:1px solid rgba(239,68,68,.3)}
+.sev-badge.b-high{background:rgba(249,115,22,.15);color:var(--high);border:1px solid rgba(249,115,22,.3)}
+.sev-badge.b-medium{background:rgba(234,179,8,.15);color:var(--medium);border:1px solid rgba(234,179,8,.3)}
+.sev-badge.b-low{background:rgba(59,130,246,.15);color:var(--low);border:1px solid rgba(59,130,246,.3)}
+.sev-badge.b-info{background:rgba(107,114,128,.15);color:var(--info);border:1px solid rgba(107,114,128,.3)}
+.finding-title{font-size:.85rem;font-weight:600;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.finding-file{font-size:.75rem;color:var(--text3);font-family:'Cascadia Code','Fira Code',monospace;flex-shrink:0;max-width:250px;text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chevron{color:var(--text3);transition:transform .2s;font-size:.75rem;flex-shrink:0}
+.finding-item.open .chevron{transform:rotate(90deg)}
+
+.finding-body{display:none;padding:0 1rem 1rem;border-top:1px solid var(--border)}
+.finding-item.open .finding-body{display:block}
+.f-section{margin-top:.75rem}
+.f-section-title{font-size:.72rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text3);margin-bottom:.35rem;font-weight:600}
+.f-code{
+  background:var(--bg);padding:.6rem .8rem;border-radius:6px;font-family:'Cascadia Code','Fira Code',monospace;
+  font-size:.8rem;overflow-x:auto;white-space:pre-wrap;word-break:break-all;color:var(--text2);border:1px solid var(--border);
+}
+.f-desc{font-size:.85rem;line-height:1.6;color:var(--text2)}
+.f-attack{
+  background:rgba(239,68,68,.06);border:1px solid rgba(239,68,68,.2);border-radius:8px;
+  padding:.75rem;font-size:.82rem;white-space:pre-wrap;line-height:1.5;color:var(--text2);
+}
+.f-rec{
+  background:rgba(34,197,94,.06);border:1px solid rgba(34,197,94,.2);border-radius:8px;
+  padding:.75rem;font-size:.82rem;line-height:1.5;color:var(--text2);
+}
+.f-meta{display:flex;gap:1rem;flex-wrap:wrap;margin-top:.5rem}
+.f-tag{font-size:.72rem;padding:.2rem .5rem;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text3)}
+
+/* ── Responsive ───────────────────────────────────── */
+@media(max-width:900px){
+  .severity-grid{grid-template-columns:repeat(3,1fr)}
+  .two-col{grid-template-columns:1fr}
+  .main{padding:1rem}
+  .topbar{padding:.75rem 1rem}
+}
+@media(max-width:600px){
+  .severity-grid{grid-template-columns:repeat(2,1fr)}
+  .input-row{flex-direction:column}
+  .finding-file{display:none}
+}
+
+/* ── PDF Download Bar ─────────────────────────────── */
+.pdf-bar{
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--radius2);
+  padding:1rem 1.25rem;margin-bottom:1.5rem;
+  display:none;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap;
+}
+.pdf-bar.visible{display:flex}
+.pdf-bar .pdf-info{display:flex;align-items:center;gap:.6rem;font-size:.85rem;color:var(--text2)}
+.pdf-bar .pdf-info strong{color:var(--text)}
+.pdf-controls{display:flex;align-items:center;gap:.75rem;flex-wrap:wrap}
+.lang-selector{
+  display:flex;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);
+  overflow:hidden;
+}
+.lang-btn{
+  padding:.45rem .9rem;font-size:.8rem;font-weight:600;border:none;background:transparent;
+  color:var(--text2);cursor:pointer;transition:all .15s;letter-spacing:.04em;
+}
+.lang-btn.active{background:var(--accent);color:#fff}
+.lang-btn:hover:not(.active){background:rgba(255,255,255,.05);color:var(--text)}
+.btn-pdf{
+  padding:.5rem 1.1rem;border-radius:var(--radius);border:none;font-weight:600;
+  font-size:.85rem;background:var(--green);color:#fff;display:inline-flex;
+  align-items:center;gap:.4rem;cursor:pointer;transition:all .2s;
+}
+.btn-pdf:hover{background:var(--green2);box-shadow:var(--glow-green)}
+.btn-pdf:disabled{opacity:.5;cursor:not-allowed}
+@keyframes spin{to{transform:rotate(360deg)}}
+.spinner{display:inline-block;width:14px;height:14px;border:2px solid rgba(255,255,255,.3);
+  border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite}
+
+/* ── Animations ───────────────────────────────────── */
+@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+.fade-in{animation:fadeIn .4s ease forwards}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
+.pulse{animation:pulse 1.5s ease infinite}
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- Top Bar -->
+  <div class="topbar">
+    <div class="logo">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" fill="rgba(59,130,246,.15)"/>
+      </svg>
+      Security Guard
+    </div>
+    <span class="version">v1.0</span>
+  </div>
+
+  <div class="main">
+    <!-- Scan Form -->
+    <div class="scan-form fade-in">
+      <h2>&#128269; New Scan</h2>
+      <div class="input-row">
+        <input type="text" id="pathInput" placeholder="Project path, e.g. C:\Users\you\project" spellcheck="false">
+        <button class="btn btn-primary" id="scanBtn" onclick="startScan()">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          Scan
+        </button>
+      </div>
+      <div class="scanner-toggles" id="scannerToggles"></div>
+    </div>
+
+    <!-- Progress -->
+    <div class="progress-section" id="progressSection">
+      <div class="progress-label">
+        <span id="progressLabel" class="pulse">Initializing...</span>
+        <span id="progressPct">0%</span>
+      </div>
+      <div class="progress-bar-track"><div class="progress-bar-fill" id="progressBar"></div></div>
+    </div>
+
+    <!-- Dashboard -->
+    <div class="dashboard" id="dashboard">
+      <!-- Score -->
+      <div class="score-card fade-in" id="scoreCard">
+        <div class="score-ring">
+          <svg width="160" height="160" viewBox="0 0 160 160">
+            <circle class="ring-bg" cx="80" cy="80" r="68"/>
+            <circle class="ring-fill" id="scoreRing" cx="80" cy="80" r="68"
+              stroke-dasharray="427.26" stroke-dashoffset="427.26"/>
+          </svg>
+          <div class="score-text" id="scoreText">--</div>
+          <div class="score-grade" id="scoreGrade"></div>
+        </div>
+        <div class="score-meta">
+          <span id="metaTarget"></span>
+          <span id="metaDate"></span>
+          <span id="metaFindings"></span>
+        </div>
+      </div>
+
+      <!-- Severity Cards -->
+      <div class="severity-grid" id="severityGrid"></div>
+
+      <!-- Two Columns -->
+      <div class="two-col">
+        <div class="panel" id="categoryPanel">
+          <h3><span class="icon">&#128202;</span> OWASP Categories</h3>
+          <div id="categoryBars"></div>
+        </div>
+        <div class="panel" id="scannerPanel">
+          <h3><span class="icon">&#128270;</span> Scanner Results</h3>
+          <div id="scannerCards"></div>
+        </div>
+      </div>
+
+      <!-- Roadmap -->
+      <div class="roadmap fade-in" id="roadmap">
+        <h3>&#128679; Remediation Roadmap to 90%</h3>
+        <div id="roadmapSteps"></div>
+      </div>
+
+      <!-- PDF Download Bar -->
+      <div class="pdf-bar fade-in" id="pdfBar">
+        <div class="pdf-info">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--critical)"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+          <span><strong>Export detailed PDF report</strong> &mdash; includes all findings, attack simulations, and remediation roadmap</span>
+        </div>
+        <div class="pdf-controls">
+          <div class="lang-selector">
+            <button class="lang-btn active" id="langEs" onclick="setLang('es',this)">ES</button>
+            <button class="lang-btn" id="langEn" onclick="setLang('en',this)">EN</button>
+          </div>
+          <button class="btn-pdf" id="pdfBtn" onclick="downloadPDF()">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            Download PDF
+          </button>
+        </div>
+      </div>
+
+      <!-- Findings -->
+      <div class="findings-section fade-in">
+        <div class="findings-header">
+          <h3 id="findingsTitle">Findings</h3>
+          <div style="display:flex;gap:.75rem;align-items:center;flex-wrap:wrap">
+            <div class="filters" id="filters"></div>
+            <input type="text" class="search-input" id="searchInput" placeholder="Search findings..." oninput="filterFindings()">
+          </div>
+        </div>
+        <div class="finding-list" id="findingList"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = '';
+let allFindings = [];
+let activeFilter = 'ALL';
+
+// ── Init ──────────────────────────────────────────
+async function init() {
+  const res = await fetch(API + '/api/scanners');
+  const scanners = await res.json();
+  const container = document.getElementById('scannerToggles');
+  scanners.forEach(s => {
+    const el = document.createElement('div');
+    el.className = 'scanner-toggle active';
+    el.dataset.key = s.key;
+    el.innerHTML = `<span class="dot"></span>${s.name}`;
+    el.onclick = () => el.classList.toggle('active');
+    container.appendChild(el);
+  });
+}
+init();
+
+// ── Scan ──────────────────────────────────────────
+async function startScan() {
+  const path = document.getElementById('pathInput').value.trim();
+  if (!path) { document.getElementById('pathInput').focus(); return; }
+
+  const toggles = document.querySelectorAll('.scanner-toggle.active');
+  const scanners = Array.from(toggles).map(t => t.dataset.key);
+  if (!scanners.length) { alert('Select at least one scanner'); return; }
+
+  document.getElementById('scanBtn').disabled = true;
+  document.getElementById('dashboard').classList.remove('visible');
+  document.getElementById('progressSection').classList.add('visible');
+
+  try {
+    const res = await fetch(API + '/api/scan', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ path, scanners })
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      alert(err.error || 'Error starting scan');
+      resetUI();
+      return;
+    }
+    pollStatus();
+  } catch(e) {
+    alert('Connection error: ' + e.message);
+    resetUI();
+  }
+}
+
+function resetUI() {
+  document.getElementById('scanBtn').disabled = false;
+  document.getElementById('progressSection').classList.remove('visible');
+}
+
+async function pollStatus() {
+  const res = await fetch(API + '/api/status');
+  const s = await res.json();
+
+  document.getElementById('progressBar').style.width = s.progress + '%';
+  document.getElementById('progressPct').textContent = s.progress + '%';
+  document.getElementById('progressLabel').textContent = s.running ? `Running: ${s.current_scanner}...` : 'Complete';
+
+  if (s.error) {
+    alert('Scan error: ' + s.error);
+    resetUI();
+    return;
+  }
+
+  if (s.running) {
+    setTimeout(pollStatus, 400);
+  } else if (s.has_results) {
+    document.getElementById('progressLabel').classList.remove('pulse');
+    setTimeout(loadResults, 300);
+  }
+}
+
+// ── Results ───────────────────────────────────────
+async function loadResults() {
+  const res = await fetch(API + '/api/results');
+  const data = await res.json();
+  allFindings = data.findings;
+
+  resetUI();
+  document.getElementById('progressSection').classList.remove('visible');
+  document.getElementById('dashboard').classList.add('visible');
+
+  renderScore(data);
+  renderSeverity(data);
+  renderCategories(data);
+  renderScanners(data);
+  renderRoadmap(data);
+  renderFilters(data);
+  renderFindings(allFindings);
+  document.getElementById('pdfBar').classList.add('visible');
+}
+
+// ── Score Ring ─────────────────────────────────────
+function renderScore(data) {
+  const ring = document.getElementById('scoreRing');
+  const circumference = 2 * Math.PI * 68;
+  const offset = circumference - (data.score / 100) * circumference;
+
+  const color = data.score >= 90 ? 'var(--green)' : data.score >= 70 ? 'var(--medium)' : data.score >= 50 ? 'var(--high)' : 'var(--critical)';
+  ring.style.stroke = color;
+  setTimeout(() => ring.style.strokeDashoffset = offset, 100);
+
+  document.getElementById('scoreText').textContent = data.score;
+  document.getElementById('scoreText').style.color = color;
+  document.getElementById('scoreGrade').textContent = `Grade ${data.grade}`;
+
+  document.getElementById('metaTarget').textContent = `Target: ${data.target.split(/[/\\]/).pop()}`;
+  document.getElementById('metaDate').textContent = data.date;
+  document.getElementById('metaFindings').textContent = `${data.total_findings} findings`;
+}
+
+// ── Severity Cards ────────────────────────────────
+function renderSeverity(data) {
+  const grid = document.getElementById('severityGrid');
+  const sevs = ['CRITICAL','HIGH','MEDIUM','LOW','INFO'];
+  grid.innerHTML = sevs.map(s => `
+    <div class="sev-card sev-${s.toLowerCase()}">
+      <div class="count">${data.severity_counts[s]}</div>
+      <div class="label">${s}</div>
+    </div>
+  `).join('');
+}
+
+// ── Categories ────────────────────────────────────
+function renderCategories(data) {
+  const container = document.getElementById('categoryBars');
+  const cats = Object.entries(data.category_counts);
+  const max = cats.length ? Math.max(...cats.map(c=>c[1])) : 1;
+  container.innerHTML = cats.map(([name, count]) => `
+    <div class="cat-bar">
+      <span class="cat-name" title="${esc(name)}">${esc(name)}</span>
+      <div class="cat-track"><div class="cat-fill" style="width:${(count/max)*100}%"></div></div>
+      <span class="cat-count">${count}</span>
+    </div>
+  `).join('');
+}
+
+// ── Scanners ──────────────────────────────────────
+function renderScanners(data) {
+  const container = document.getElementById('scannerCards');
+  container.innerHTML = data.scanners.map(s => `
+    <div class="scanner-card">
+      <div class="scanner-icon ${s.findings_count ? 'warn' : 'clean'}">${s.findings_count ? '&#9888;' : '&#10003;'}</div>
+      <div class="scanner-info">
+        <div class="sname">${esc(s.name)}</div>
+        <div class="sdesc">${s.files_scanned} files &middot; ${esc(s.description)}</div>
+      </div>
+      <div class="scanner-stats">
+        <div class="scount">${s.findings_count}</div>
+        <div class="stime">${s.time}s</div>
+      </div>
+    </div>
+  `).join('');
+}
+
+// ── Roadmap ───────────────────────────────────────
+function renderRoadmap(data) {
+  const container = document.getElementById('roadmapSteps');
+  const sc = data.severity_counts;
+
+  if (data.score >= 90) {
+    container.innerHTML = `<div class="roadmap-step"><div class="step-circle ok">&#10003;</div><div class="step-content"><strong>Your project meets the 90% security target!</strong><p>Continue monitoring for new vulnerabilities and keep dependencies updated.</p></div></div>`;
+    return;
+  }
+
+  let steps = [], n = 1;
+  if (sc.CRITICAL) steps.push(`<div class="roadmap-step"><div class="step-circle crit">${n++}</div><div class="step-content"><strong>Fix ${sc.CRITICAL} CRITICAL vulnerabilities</strong><p>Actively exploitable issues. Each fix recovers ~15 points. Fix these immediately.</p></div></div>`);
+  if (sc.HIGH) steps.push(`<div class="roadmap-step"><div class="step-circle high">${n++}</div><div class="step-content"><strong>Fix ${sc.HIGH} HIGH severity issues</strong><p>Significant security risks. Each fix recovers ~8 points. Plan for next sprint.</p></div></div>`);
+  if (sc.MEDIUM) steps.push(`<div class="roadmap-step"><div class="step-circle med">${n++}</div><div class="step-content"><strong>Address ${sc.MEDIUM} MEDIUM findings</strong><p>Best-practice improvements. Each fix recovers ~4 points.</p></div></div>`);
+  steps.push(`<div class="roadmap-step"><div class="step-circle ok">${n}</div><div class="step-content"><strong>Implement preventive measures</strong><p>Add CI/CD security scanning, pre-commit hooks, dependency auditing, and regular pen testing.</p></div></div>`);
+  container.innerHTML = steps.join('');
+}
+
+// ── Filters ───────────────────────────────────────
+function renderFilters(data) {
+  const container = document.getElementById('filters');
+  const sevs = ['ALL','CRITICAL','HIGH','MEDIUM','LOW','INFO'];
+  container.innerHTML = sevs.map(s => {
+    const count = s === 'ALL' ? data.total_findings : data.severity_counts[s];
+    return `<button class="filter-btn ${s === 'ALL' ? 'active' : ''}" onclick="setFilter('${s}',this)">${s}<span class="fcount">${count}</span></button>`;
+  }).join('');
+  document.getElementById('findingsTitle').textContent = `Findings (${data.total_findings})`;
+}
+
+function setFilter(sev, el) {
+  activeFilter = sev;
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  el.classList.add('active');
+  filterFindings();
+}
+
+function filterFindings() {
+  const q = document.getElementById('searchInput').value.toLowerCase();
+  let filtered = allFindings;
+  if (activeFilter !== 'ALL') filtered = filtered.filter(f => f.severity === activeFilter);
+  if (q) filtered = filtered.filter(f =>
+    f.title.toLowerCase().includes(q) ||
+    f.file_path.toLowerCase().includes(q) ||
+    f.description.toLowerCase().includes(q) ||
+    (f.category && f.category.toLowerCase().includes(q))
+  );
+  renderFindings(filtered);
+}
+
+// ── Findings List ─────────────────────────────────
+function renderFindings(findings) {
+  const container = document.getElementById('findingList');
+  if (!findings.length) {
+    container.innerHTML = '<div style="text-align:center;padding:2rem;color:var(--text3)">No findings match your filters</div>';
+    return;
+  }
+
+  container.innerHTML = findings.map((f, i) => `
+    <div class="finding-item" id="fi-${i}">
+      <div class="finding-item-header" onclick="document.getElementById('fi-${i}').classList.toggle('open')">
+        <span class="sev-badge b-${f.severity.toLowerCase()}">${f.severity}</span>
+        <span class="finding-title">${esc(f.title)}</span>
+        <span class="finding-file">${esc(f.file_path)}${f.line_number ? ':'+f.line_number : ''}</span>
+        <span class="chevron">&#9654;</span>
+      </div>
+      <div class="finding-body">
+        <div class="f-meta">
+          <span class="f-tag">${esc(f.category)}</span>
+          ${f.cwe_id ? `<span class="f-tag">${esc(f.cwe_id)}</span>` : ''}
+        </div>
+        <div class="f-section">
+          <div class="f-section-title">Code</div>
+          <div class="f-code">${esc(f.code_snippet)}</div>
+        </div>
+        <div class="f-section">
+          <div class="f-section-title">Description</div>
+          <div class="f-desc">${esc(f.description)}</div>
+        </div>
+        ${f.attack_simulation ? `
+        <div class="f-section">
+          <div class="f-section-title">&#9888;&#65039; Attack Simulation</div>
+          <div class="f-attack">${esc(f.attack_simulation)}</div>
+        </div>` : ''}
+        <div class="f-section">
+          <div class="f-section-title">&#9989; Recommendation</div>
+          <div class="f-rec">${esc(f.recommendation)}</div>
+        </div>
+      </div>
+    </div>
+  `).join('');
+}
+
+// ── Utils ─────────────────────────────────────────
+function esc(s) {
+  if (!s) return '';
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+// ── PDF Export ────────────────────────────────────
+let selectedLang = 'es';
+
+function setLang(lang, el) {
+  selectedLang = lang;
+  document.querySelectorAll('.lang-btn').forEach(b => b.classList.remove('active'));
+  el.classList.add('active');
+}
+
+async function downloadPDF() {
+  const btn = document.getElementById('pdfBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Generating...';
+
+  try {
+    const res = await fetch(API + `/api/export/pdf?lang=${selectedLang}`);
+    if (!res.ok) {
+      const err = await res.json();
+      alert('Error generating PDF: ' + (err.error || 'Unknown error'));
+      return;
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const cd = res.headers.get('Content-Disposition') || '';
+    const match = cd.match(/filename="?([^"]+)"?/);
+    a.download = match ? match[1] : `security_report_${selectedLang}.pdf`;
+    a.href = url;
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch(e) {
+    alert('Connection error: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Download PDF';
+  }
+}
+
+// ── Enter to scan ─────────────────────────────────
+document.getElementById('pathInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') startScan();
+});
+</script>
+</body>
+</html>
