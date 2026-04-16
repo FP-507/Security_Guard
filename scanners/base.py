@@ -51,6 +51,8 @@ class Finding:
     recommendation: str
     cwe_id: Optional[str] = None
     attack_simulation: Optional[str] = None
+    root_cause: Optional[str] = None       # WHY the vulnerability exists (underlying flaw)
+    consequences: Optional[str] = None     # Business/security impact if exploited
 
     @property
     def score(self) -> int:

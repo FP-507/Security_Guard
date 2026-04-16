@@ -251,6 +251,16 @@ button{cursor:pointer;font-family:inherit}
   background:rgba(239,68,68,.06);border:1px solid rgba(239,68,68,.2);border-radius:8px;
   padding:.75rem;font-size:.82rem;white-space:pre-wrap;line-height:1.5;color:var(--text2);
 }
+.f-root-cause{
+  background:rgba(251,191,36,.06);border:1px solid rgba(251,191,36,.25);border-radius:8px;
+  padding:.75rem;font-size:.82rem;line-height:1.6;color:var(--text2);white-space:pre-wrap;
+}
+.f-consequences{
+  background:rgba(239,68,68,.09);border:1px solid rgba(239,68,68,.3);border-radius:8px;
+  padding:.75rem;font-size:.82rem;line-height:1.6;color:var(--text2);white-space:pre-wrap;
+}
+.f-section-root .f-section-title{color:#fbbf24}
+.f-section-conseq .f-section-title{color:#f87171}
 .f-rec{
   background:rgba(34,197,94,.06);border:1px solid rgba(34,197,94,.2);border-radius:8px;
   padding:.75rem;font-size:.82rem;line-height:1.5;color:var(--text2);
@@ -270,6 +280,41 @@ button{cursor:pointer;font-family:inherit}
   .input-row{flex-direction:column}
   .finding-file{display:none}
 }
+
+/* ── Scan Mode Tabs ───────────────────────────────── */
+.mode-tabs{display:flex;gap:.35rem;margin-bottom:1rem}
+.mode-tab{
+  padding:.42rem .9rem;border-radius:8px;border:1px solid var(--border);
+  background:transparent;color:var(--text2);font-size:.8rem;font-weight:600;
+  cursor:pointer;transition:all .18s;display:flex;align-items:center;gap:.4rem;
+}
+.mode-tab:hover{border-color:var(--border2);color:var(--text)}
+.mode-tab.active{background:rgba(59,130,246,.13);border-color:var(--accent);color:var(--accent)}
+.mode-tab.active-github{background:rgba(139,92,246,.13);border-color:#8b5cf6;color:#a78bfa}
+.mode-tab.active-web{background:rgba(34,197,94,.13);border-color:var(--green);color:var(--green)}
+
+/* Token field */
+.token-row{display:flex;gap:.75rem;margin-bottom:.75rem;align-items:center}
+.token-row input[type=password]{
+  flex:1;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);
+  padding:.55rem .9rem;color:var(--text);font-size:.85rem;transition:border .2s;
+  font-family:'Cascadia Code','Fira Code',monospace;letter-spacing:.05em;
+}
+.token-row input:focus{outline:none;border-color:#8b5cf6;box-shadow:0 0 0 3px rgba(139,92,246,.12)}
+.token-label{font-size:.78rem;color:var(--text3);white-space:nowrap;display:flex;align-items:center;gap:.3rem}
+
+/* Scan type badge in results */
+.scan-type-badge{
+  display:inline-flex;align-items:center;gap:.3rem;
+  padding:.2rem .55rem;border-radius:20px;font-size:.7rem;font-weight:700;
+  letter-spacing:.04em;text-transform:uppercase;margin-left:.5rem;
+}
+.badge-local{background:rgba(59,130,246,.12);color:var(--accent);border:1px solid rgba(59,130,246,.3)}
+.badge-github{background:rgba(139,92,246,.12);color:#a78bfa;border:1px solid rgba(139,92,246,.3)}
+.badge-web{background:rgba(34,197,94,.12);color:var(--green);border:1px solid rgba(34,197,94,.3)}
+
+/* Web-mode hides scanner toggles */
+.scanners-hidden{display:none!important}
 
 /* ── PDF Download Bar ─────────────────────────────── */
 .pdf-bar{
@@ -326,13 +371,35 @@ button{cursor:pointer;font-family:inherit}
     <!-- Scan Form -->
     <div class="scan-form fade-in">
       <h2>&#128269; New Scan</h2>
+
+      <!-- Mode tabs -->
+      <div class="mode-tabs">
+        <button class="mode-tab active" id="tab-local" onclick="setMode('local')">
+          &#128193; Local Path
+        </button>
+        <button class="mode-tab" id="tab-github" onclick="setMode('github')">
+          &#128025; GitHub Repo
+        </button>
+        <button class="mode-tab" id="tab-web" onclick="setMode('web')">
+          &#127758; Website
+        </button>
+      </div>
+
+      <!-- Main input -->
       <div class="input-row">
-        <input type="text" id="pathInput" placeholder="Project path, e.g. C:\Users\you\project" spellcheck="false">
+        <input type="text" id="pathInput" placeholder="Project path, e.g. C:\Users\you\project" spellcheck="false" autocomplete="off">
         <button class="btn btn-primary" id="scanBtn" onclick="startScan()">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
           Scan
         </button>
       </div>
+
+      <!-- GitHub token (shown only in github mode) -->
+      <div class="token-row" id="tokenRow" style="display:none">
+        <span class="token-label">&#128273; Token (optional, for private repos):</span>
+        <input type="password" id="tokenInput" placeholder="ghp_xxxxxxxxxxxxxxxxxxxx" autocomplete="off">
+      </div>
+
       <div class="scanner-toggles" id="scannerToggles"></div>
     </div>
 
@@ -360,6 +427,7 @@ button{cursor:pointer;font-family:inherit}
         </div>
         <div class="score-meta">
           <span id="metaTarget"></span>
+          <span id="metaBadge"></span>
           <span id="metaDate"></span>
           <span id="metaFindings"></span>
         </div>
@@ -423,6 +491,35 @@ button{cursor:pointer;font-family:inherit}
 const API = '';
 let allFindings = [];
 let activeFilter = 'ALL';
+let currentMode = 'local';  // 'local' | 'github' | 'web'
+
+// ── Mode switching ────────────────────────────────
+const MODE_CONFIG = {
+  local:  { placeholder: 'Project path, e.g. C:\\Users\\you\\project', tab: 'tab-local',  activeClass: 'active',        showToken: false, showToggles: true  },
+  github: { placeholder: 'https://github.com/owner/repo',              tab: 'tab-github', activeClass: 'active-github', showToken: true,  showToggles: true  },
+  web:    { placeholder: 'https://example.com',                         tab: 'tab-web',    activeClass: 'active-web',    showToken: false, showToggles: false },
+};
+
+function setMode(mode) {
+  currentMode = mode;
+  const cfg = MODE_CONFIG[mode];
+
+  // Update tabs
+  ['local','github','web'].forEach(m => {
+    const tab = document.getElementById('tab-' + m);
+    tab.className = 'mode-tab' + (m === mode ? ' ' + MODE_CONFIG[m].activeClass : '');
+  });
+
+  // Update input placeholder
+  document.getElementById('pathInput').placeholder = cfg.placeholder;
+
+  // Show/hide token field
+  document.getElementById('tokenRow').style.display = cfg.showToken ? 'flex' : 'none';
+
+  // Show/hide scanner toggles
+  const toggles = document.getElementById('scannerToggles');
+  toggles.classList.toggle('scanners-hidden', !cfg.showToggles);
+}
 
 // ── Init ──────────────────────────────────────────
 async function init() {
@@ -445,9 +542,21 @@ async function startScan() {
   const path = document.getElementById('pathInput').value.trim();
   if (!path) { document.getElementById('pathInput').focus(); return; }
 
-  const toggles = document.querySelectorAll('.scanner-toggle.active');
-  const scanners = Array.from(toggles).map(t => t.dataset.key);
-  if (!scanners.length) { alert('Select at least one scanner'); return; }
+  const body = { path };
+
+  // For web mode, no scanner keys needed (server picks automatically)
+  if (currentMode !== 'web') {
+    const toggles = document.querySelectorAll('.scanner-toggle.active');
+    const scanners = Array.from(toggles).map(t => t.dataset.key);
+    if (!scanners.length) { alert('Select at least one scanner'); return; }
+    body.scanners = scanners;
+  }
+
+  // Include GitHub token if provided
+  if (currentMode === 'github') {
+    const token = document.getElementById('tokenInput').value.trim();
+    if (token) body.github_token = token;
+  }
 
   document.getElementById('scanBtn').disabled = true;
   document.getElementById('dashboard').classList.remove('visible');
@@ -457,7 +566,7 @@ async function startScan() {
     const res = await fetch(API + '/api/scan', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ path, scanners })
+      body: JSON.stringify(body)
     });
     if (!res.ok) {
       const err = await res.json();
@@ -483,7 +592,7 @@ async function pollStatus() {
 
   document.getElementById('progressBar').style.width = s.progress + '%';
   document.getElementById('progressPct').textContent = s.progress + '%';
-  document.getElementById('progressLabel').textContent = s.running ? `Running: ${s.current_scanner}...` : 'Complete';
+  document.getElementById('progressLabel').textContent = s.running ? `${s.current_scanner}...` : 'Complete';
 
   if (s.error) {
     alert('Scan error: ' + s.error);
@@ -533,7 +642,21 @@ function renderScore(data) {
   document.getElementById('scoreText').style.color = color;
   document.getElementById('scoreGrade').textContent = `Grade ${data.grade}`;
 
-  document.getElementById('metaTarget').textContent = `Target: ${data.target.split(/[/\\]/).pop()}`;
+  // Target label — shorten display
+  const t = data.target || '';
+  const shortTarget = t.length > 50 ? t.slice(0, 47) + '…' : t;
+  document.getElementById('metaTarget').textContent = `Target: ${shortTarget}`;
+
+  // Scan type badge
+  const typeMap = {
+    local:  { label: '📁 Local',  cls: 'badge-local'  },
+    github: { label: '🐙 GitHub', cls: 'badge-github' },
+    web:    { label: '🌐 Web',    cls: 'badge-web'    },
+  };
+  const badge = typeMap[data.scan_type] || typeMap.local;
+  document.getElementById('metaBadge').innerHTML =
+    `<span class="scan-type-badge ${badge.cls}">${badge.label}</span>`;
+
   document.getElementById('metaDate').textContent = data.date;
   document.getElementById('metaFindings').textContent = `${data.total_findings} findings`;
 }
@@ -657,9 +780,19 @@ function renderFindings(findings) {
           <div class="f-code">${esc(f.code_snippet)}</div>
         </div>
         <div class="f-section">
-          <div class="f-section-title">Description</div>
+          <div class="f-section-title">&#128269; Description</div>
           <div class="f-desc">${esc(f.description)}</div>
         </div>
+        ${f.root_cause ? `
+        <div class="f-section f-section-root">
+          <div class="f-section-title">&#128270; Root Cause</div>
+          <div class="f-root-cause">${esc(f.root_cause)}</div>
+        </div>` : ''}
+        ${f.consequences ? `
+        <div class="f-section f-section-conseq">
+          <div class="f-section-title">&#9889; Consequences</div>
+          <div class="f-consequences">${esc(f.consequences)}</div>
+        </div>` : ''}
         ${f.attack_simulation ? `
         <div class="f-section">
           <div class="f-section-title">&#9888;&#65039; Attack Simulation</div>
@@ -723,6 +856,19 @@ async function downloadPDF() {
 // ── Enter to scan ─────────────────────────────────
 document.getElementById('pathInput').addEventListener('keydown', e => {
   if (e.key === 'Enter') startScan();
+});
+document.getElementById('tokenInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') startScan();
+});
+
+// ── Auto-detect mode from pasted URL ──────────────
+document.getElementById('pathInput').addEventListener('input', e => {
+  const val = e.target.value.trim().toLowerCase();
+  if (val.includes('github.com/')) {
+    setMode('github');
+  } else if (val.startsWith('http://') || val.startsWith('https://')) {
+    setMode('web');
+  }
 });
 </script>
 </body>
