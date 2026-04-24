@@ -26,9 +26,9 @@ from scanners import (
     InsecureDefaultsScanner,
     WebAuditor,
 )
-from pdf_generator import generate_pdf
+from core.pdf_generator import generate_pdf
 from scanners.base import Severity, ScanResult, Finding
-import github_fetcher
+from core import github_fetcher
 
 app = Flask(__name__)
 

@@ -18,19 +18,26 @@ Para usar un skill, referencia su SKILL.md en `.claude/trailofbits-skills/plugin
 ## Arquitectura
 
 ```
-app.py                  — Flask web server (puerto 5000)
-run.py                  — Launcher que bypasea cache de bytecode
-pdf_generator.py        — Genera reportes PDF bilingüe (ES/EN)
+app.py                      — Flask web server (puerto 5000)
+run.py                      — Launcher que bypasea cache de bytecode
+security_guard.py           — CLI entry point
+requirements.txt            — Dependencias Python
+core/
+  __init__.py               — Re-exports de core utilities
+  github_fetcher.py         — Clonado de repos GitHub, helpers is_github_url/is_web_url
+  pdf_generator.py          — Genera reportes PDF bilingüe (ES/EN) con ReportLab
+  report_generator.py       — Reportes consola y HTML (modo CLI)
 scanners/
-  __init__.py           — Exporta todos los scanners
-  base.py               — Finding, ScanResult, Severity, Category
-  static_analyzer.py    — 25+ patrones de vulnerabilidad con root_cause/consequences
-  secret_detector.py    — 30+ patrones de secretos con entropia Shannon
-  dependency_scanner.py — 51 CVEs (Python/JS/Ruby/Go) con semver parsing
-  config_auditor.py     — Docker, CI/CD, cookies, CORS, HSTS
-  insecure_defaults.py  — Metodología Trail of Bits: fail-open patterns
-  attack_simulator.py   — 20 vectores de ataque con context-aware detection
-templates/index.html    — UI dark-theme con score ring y PDF export
+  __init__.py               — Exporta todos los scanners
+  base.py                   — Finding, ScanResult, Severity, Category, BaseScanner
+  static_analyzer.py        — 25+ patrones de vulnerabilidad con root_cause/consequences
+  secret_detector.py        — 30+ patrones de secretos con entropia Shannon
+  dependency_scanner.py     — 51 CVEs (Python/JS/Ruby/Go) con semver parsing
+  config_auditor.py         — Docker, CI/CD, cookies, CORS, HSTS
+  insecure_defaults.py      — Metodología Trail of Bits: fail-open patterns
+  attack_simulator.py       — 20 vectores de ataque con context-aware detection
+  web_auditor.py            — Auditoría black-box de sitios web en vivo
+templates/index.html        — UI dark-theme con score ring y PDF export
 ```
 
 ## Estructura Finding

@@ -1,0 +1,56 @@
+# ── Python bytecode ───────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+
+# ── Virtual environments ──────────────────────────────────────────────────────
+venv/
+env/
+.env/
+.venv/
+ENV/
+
+# ── Scan reports & exports (may contain real vulnerability data) ───────────────
+reports/
+*.pdf
+*.html
+
+# ── Temporary GitHub clone directories ────────────────────────────────────────
+sg_github_*/
+
+# ── Secrets & environment files ───────────────────────────────────────────────
+.env
+.env.*
+*.env
+secrets.yml
+secrets.yaml
+secrets.json
+
+# ── Internal Claude Code context (dev tool, not project docs) ─────────────────
+CLAUDE.md
+.claude/
+
+# ── IDE & editor settings ─────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── OS files ──────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Build artifacts ───────────────────────────────────────────────────────────
+dist/
+build/
+*.egg-info/
+*.egg
+
+# ── Pytest / coverage ─────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/

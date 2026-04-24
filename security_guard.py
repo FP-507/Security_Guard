@@ -43,7 +43,7 @@ from scanners import (
     AttackSimulator,
 )
 from scanners.base import Severity, ScanResult
-from report_generator import (
+from core.report_generator import (
     print_console_report,
     generate_html_report,
     calculate_security_score,
