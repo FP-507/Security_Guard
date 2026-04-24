@@ -1,1 +1,0 @@
-{"error":"PDF generation failed: \nparagraph text '<para>if (mainImg) mainImg.innerHTML = \\'<img src=\"\\' + p.image_url + \\'\" alt=\"\\' + p.name + \\'\" style=\"width:100%;height:100%;object-fit:contain;\">\\';</para>' caused exception paraparser: syntax error: invalid attribute name alt attrMap=['height', 'src', 'valign', 'width']"}
