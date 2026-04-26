@@ -7,7 +7,10 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional
 
-from .base import BaseScanner, Category, Finding, ScanResult, Severity
+from .base import (
+    BaseScanner, Category, Finding, ScanResult, Severity, Confidence,
+    should_skip_dir, should_skip_file,
+)
 
 
 SKIP_DIRS = {
@@ -34,6 +37,8 @@ class AttackPattern:
     context_lines: int = 5
     context_require: Optional[str] = None      # regex that must match in context
     context_exclude: Optional[str] = None      # regex that must NOT match in context
+    # Default confidence — context_require uplifts a match to HIGH automatically
+    confidence: Confidence = Confidence.MEDIUM
 
 
 CODE_EXTS = {".py", ".js", ".ts", ".jsx", ".tsx", ".php", ".rb", ".java", ".go", ".cs", ".vue", ".svelte"}
@@ -776,8 +781,13 @@ class AttackSimulator(BaseScanner):
         if extensions is None:
             extensions = CODE_EXTS
         for root, dirs, files in os.walk(self.target_path):
-            dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+            dirs[:] = [
+                d for d in dirs
+                if d not in SKIP_DIRS and not should_skip_dir(d)
+            ]
             for fname in files:
+                if should_skip_file(fname):
+                    continue
                 ext = os.path.splitext(fname)[1].lower()
                 if ext not in extensions:
                     continue
@@ -826,6 +836,19 @@ class AttackSimulator(BaseScanner):
                         continue
                     reported.add(key)
 
+                    # Confidence: context_require proven OR taint indicator in
+                    # context window uplifts to HIGH (was Medium by default).
+                    has_taint = bool(re.search(
+                        r"request\.|req\.body|req\.params|req\.query|"
+                        r"\$_(?:GET|POST|REQUEST)|input\s*\(|argv|"
+                        r"params\[|window\.location|document\.location",
+                        context, re.IGNORECASE,
+                    ))
+                    if ap.context_require or has_taint:
+                        conf = Confidence.HIGH
+                    else:
+                        conf = ap.confidence
+
                     result.findings.append(Finding(
                         title=ap.title,
                         severity=ap.severity,
@@ -837,6 +860,7 @@ class AttackSimulator(BaseScanner):
                         recommendation=ap.recommendation,
                         cwe_id=ap.cwe_id,
                         attack_simulation=ap.attack_simulation,
+                        confidence=conf,
                     ))
 
     def _simulate_supply_chain(self, result: ScanResult):

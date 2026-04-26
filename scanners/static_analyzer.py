@@ -16,7 +16,10 @@ import re
 import time
 from dataclasses import dataclass
 from typing import Optional
-from .base import BaseScanner, ScanResult, Finding, Severity, Category
+from .base import (
+    BaseScanner, ScanResult, Finding, Severity, Category, Confidence,
+    should_skip_dir, should_skip_file,
+)
 
 # ── Constants ──────────────────────────────────────────────────────────────
 
@@ -91,6 +94,8 @@ class VulnPattern:
     # Only report if one of these taint sources appears in context window (N lines)
     require_taint: bool = False
     taint_window: int = 10
+    # Default confidence when pattern matches without a taint flow proof
+    confidence: Confidence = Confidence.MEDIUM
 
 
 def _r(*patterns):
@@ -1135,6 +1140,44 @@ for _vp in VULNERABILITY_PATTERNS:
         _vp.consequences = _ENRICHMENT[_vp.id].get("consequences", "")
 
 
+# ── Per-pattern precision tuning ───────────────────────────────────────────
+# Patterns where requiring taint flow dramatically reduces false positives.
+# These are injection-class checks where the sink is only dangerous if
+# user-controlled data reaches it.
+_TAINT_REQUIRED: set[str] = {
+    "sql_injection_concat", "sql_injection_format",
+    "command_injection",
+    "ssti",
+    "ldap_injection", "nosql_injection",
+    "xss_innerhtml", "xss_document_write", "xss_react_dangerous",
+    "xss_server_reflected",
+    "path_traversal",
+    "ssrf",
+    "open_redirect",
+    "prototype_pollution",
+}
+
+# Patterns that are unambiguous when matched (no taint analysis needed):
+# the sink itself is the vulnerability (e.g. eval(), MD5, debug=True).
+_HIGH_CONFIDENCE: set[str] = {
+    "code_injection_eval",
+    "xxe",
+    "weak_hash", "weak_cipher", "insecure_random",
+    "jwt_insecure",
+    "pickle_deserialization", "yaml_load",
+    "debug_mode",
+    "ssl_verification_disabled",
+    "cors_wildcard",
+    "hardcoded_password",
+}
+
+for _vp in VULNERABILITY_PATTERNS:
+    if _vp.id in _TAINT_REQUIRED:
+        _vp.require_taint = True
+    if _vp.id in _HIGH_CONFIDENCE:
+        _vp.confidence = Confidence.HIGH
+
+
 # ── Scanner Class ──────────────────────────────────────────────────────────
 
 class StaticAnalyzer(BaseScanner):
@@ -1151,14 +1194,20 @@ class StaticAnalyzer(BaseScanner):
                 ext_index.setdefault(ext, []).append(vp)
 
         for root, dirs, files in os.walk(self.target_path):
-            dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+            # Use the shared skip-dir list from base.py + this module's extras
+            dirs[:] = [
+                d for d in dirs
+                if not should_skip_dir(d) and d not in SKIP_DIRS
+            ]
 
             for fname in files:
                 fpath = os.path.join(root, fname)
                 ext = os.path.splitext(fname)[1].lower()
 
-                # Skip binary / minified files
-                if ext in BINARY_EXTENSIONS or fname.endswith(".min.js"):
+                # Skip binary / minified / lockfile / vendored files
+                if should_skip_file(fname):
+                    continue
+                if ext in BINARY_EXTENSIONS:
                     continue
                 if ext not in ext_index:
                     continue
@@ -1240,6 +1289,35 @@ class StaticAnalyzer(BaseScanner):
                 if is_test and vp.severity in (Severity.LOW, Severity.MEDIUM, Severity.INFO):
                     continue
 
+                # Taint enforcement: if pattern declares require_taint, look for
+                # a user-controlled source within taint_window lines around the
+                # match. If absent, either skip or downgrade confidence.
+                taint_proven = False
+                if vp.require_taint:
+                    win = vp.taint_window
+                    ctx_start = max(0, i - 1 - win)
+                    ctx_end = min(len(lines), i + win)
+                    ctx = "".join(lines[ctx_start:ctx_end])
+                    if TAINT_SOURCES.search(ctx):
+                        taint_proven = True
+                    else:
+                        # No taint flow in scope — likely false positive for
+                        # injection-class patterns. Skip rather than report
+                        # noise.
+                        continue
+
+                # Compute confidence:
+                # - CONFIRMED: pattern required taint and we proved it
+                # - HIGH: pattern's declared default (e.g. unambiguous sinks)
+                # - MEDIUM: default
+                # - LOW: matches inside test/fixture code
+                if taint_proven:
+                    conf = Confidence.CONFIRMED
+                elif is_test:
+                    conf = Confidence.LOW
+                else:
+                    conf = vp.confidence
+
                 reported.add((vp.id, i))
                 snippet = stripped[:200]
 
@@ -1256,6 +1334,7 @@ class StaticAnalyzer(BaseScanner):
                     attack_simulation=vp.attack,
                     root_cause=vp.root_cause or None,
                     consequences=vp.consequences or None,
+                    confidence=conf,
                 ))
 
         return findings

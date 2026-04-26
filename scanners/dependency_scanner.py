@@ -15,7 +15,46 @@ import json
 import os
 import re
 import time
-from .base import BaseScanner, ScanResult, Finding, Severity, Category
+from .base import (
+    BaseScanner, ScanResult, Finding, Severity, Category, Confidence,
+    should_skip_dir,
+)
+from core.osv_client import OsvClient, OsvQuery, OsvVuln
+
+_SEVERITY_FROM_STR = {
+    "CRITICAL": Severity.CRITICAL,
+    "HIGH": Severity.HIGH,
+    "MEDIUM": Severity.MEDIUM,
+    "LOW": Severity.LOW,
+}
+
+
+def _osv_finding(pkg: str, version: str, file_path: str, line_num,
+                 snippet: str, vuln: OsvVuln, install_cmd: str) -> Finding:
+    """Build a Finding from an OSV advisory."""
+    aliases = ", ".join(vuln.aliases[:3]) if vuln.aliases else vuln.id
+    fix = vuln.fix_version or "latest"
+    refs = "\n".join(f"  - {u}" for u in vuln.references[:3])
+    return Finding(
+        title=f"Vulnerable Package: {pkg}@{version} ({vuln.id})",
+        severity=_SEVERITY_FROM_STR.get(vuln.severity, Severity.MEDIUM),
+        category=Category.VULNERABLE_COMPONENTS,
+        file_path=file_path,
+        line_number=line_num,
+        code_snippet=snippet,
+        description=f"{vuln.summary}\nAliases: {aliases}",
+        recommendation=(
+            f"Upgrade to {pkg}>={fix}\n"
+            f"  {install_cmd}\n"
+            f"References:\n{refs}" if refs else f"Upgrade to {pkg}>={fix}\n  {install_cmd}"
+        ),
+        cwe_id="CWE-1104",
+        attack_simulation=(
+            f"Public advisory {vuln.id} documents the exploit. "
+            f"Attackers scan registries and SBOMs for vulnerable versions."
+        ),
+        confidence=Confidence.CONFIRMED,
+    )
 
 SKIP_DIRS = {
     "node_modules", ".git", "__pycache__", ".venv", "venv",
@@ -142,6 +181,47 @@ PYTHON_CVES = [
              "Buffer overflow in ndarray deserialization.", "1.24.0"),
     CVEEntry("lxml",      "<5.1.1",    "CVE-2024-27983", Severity.HIGH,
              "XXE in lxml HTML cleaner allows SSRF and file disclosure.", "5.1.1"),
+    # ── Additional Python CVEs (precision expansion) ──
+    CVEEntry("gitpython", "<3.1.41",   "CVE-2024-22190", Severity.HIGH,
+             "Untrusted search path on Windows allows arbitrary code execution.", "3.1.41"),
+    CVEEntry("ansible-core", "<2.14.14", "CVE-2024-0690", Severity.MEDIUM,
+             "Information disclosure via ANSIBLE_NO_LOG bypass with templated inputs.", "2.14.14"),
+    CVEEntry("scrapy",    "<2.11.2",   "CVE-2024-3574",  Severity.HIGH,
+             "Authorization header leak on cross-origin redirects.", "2.11.2"),
+    CVEEntry("scrapy",    "<2.11.2",   "CVE-2024-1968",  Severity.HIGH,
+             "Cookies leaked across domains during redirects.", "2.11.2"),
+    CVEEntry("setuptools","<70.0.0",   "CVE-2024-6345",  Severity.HIGH,
+             "Remote code execution via package_index.PackageIndex with crafted URL.", "70.0.0"),
+    CVEEntry("transformers", "<4.38.0", "CVE-2024-3568", Severity.HIGH,
+             "Arbitrary code execution via TF model loading from untrusted source.", "4.38.0"),
+    CVEEntry("torch",     "<2.2.0",    "CVE-2024-31580", Severity.HIGH,
+             "Heap-based buffer overflow in torch.distributed parameter aggregation.", "2.2.0"),
+    CVEEntry("mlflow",    "<2.9.2",    "CVE-2023-6831",  Severity.CRITICAL,
+             "Path traversal allows arbitrary file read on the MLflow server.", "2.9.2"),
+    CVEEntry("langchain", "<0.0.353",  "CVE-2024-0243",  Severity.HIGH,
+             "Server-side request forgery in webhook integrations.", "0.0.353"),
+    CVEEntry("llama-index","<0.10.38", "CVE-2024-4181",  Severity.HIGH,
+             "Command injection via PandasQueryEngine prompt-injection vector.", "0.10.38"),
+    CVEEntry("notebook",  "<7.2.2",    "CVE-2024-43805", Severity.HIGH,
+             "XSS in markdown renderer leads to session token theft.", "7.2.2"),
+    CVEEntry("jupyter-server","<2.14.2","CVE-2024-43805",Severity.HIGH,
+             "XSS in markdown renderer leads to session token theft.", "2.14.2"),
+    CVEEntry("python-multipart","<0.0.7","CVE-2024-24762", Severity.HIGH,
+             "ReDoS in Content-Type boundary parsing.", "0.0.7"),
+    CVEEntry("starlette", "<0.40.0",   "CVE-2024-47874", Severity.HIGH,
+             "DoS via excessive multipart fields.", "0.40.0"),
+    CVEEntry("idna",      "<3.7",      "CVE-2024-3651",  Severity.MEDIUM,
+             "DoS via crafted IDNA input causing quadratic complexity.", "3.7"),
+    CVEEntry("zipp",      "<3.19.1",   "CVE-2024-5569",  Severity.MEDIUM,
+             "DoS via infinite loop on malformed zip files.", "3.19.1"),
+    CVEEntry("certifi",   "<2024.7.4", "CVE-2024-39689", Severity.MEDIUM,
+             "Removes GLOBALTRUST root that was issuing certificates without proper validation.", "2024.7.4"),
+    CVEEntry("dnspython", "<2.6.1",    "CVE-2023-29483", Severity.HIGH,
+             "Use of weak random source in DNS query ID generation enables cache poisoning.", "2.6.1"),
+    CVEEntry("orjson",    "<3.9.15",   "CVE-2024-27454", Severity.MEDIUM,
+             "Stack overflow on deeply nested JSON input.", "3.9.15"),
+    CVEEntry("tornado",   "<6.4.2",    "CVE-2024-52804", Severity.HIGH,
+             "DoS via slow HTTP cookie header parsing.", "6.4.2"),
 ]
 
 JAVASCRIPT_CVES = [
@@ -193,30 +273,350 @@ JAVASCRIPT_CVES = [
              "Denial of service via crafted multipart/form-data payload.", "1.4.5"),
     CVEEntry("jose",            "<4.15.5",  "CVE-2024-28176", Severity.HIGH,
              "Denial of service via JSON Web Encryption with large PBES2 count.", "4.15.5"),
+    # ── Additional JS/TS CVEs (precision expansion) ──
+    CVEEntry("undici",          "<5.28.4",  "CVE-2024-30260", Severity.HIGH,
+             "Cookie and Authorization headers leaked on cross-origin redirect.", "5.28.4"),
+    CVEEntry("undici",          "<6.19.2",  "CVE-2024-24750", Severity.MEDIUM,
+             "Insufficient randomness in form-data boundaries enables HTTP smuggling.", "6.19.2"),
+    CVEEntry("follow-redirects","<1.15.6",  "CVE-2024-28849", Severity.HIGH,
+             "Authorization header leaked when following cross-origin redirects.", "1.15.6"),
+    CVEEntry("ws",              "<8.17.1",  "CVE-2024-37890", Severity.HIGH,
+             "DoS via excess HTTP headers crashes the WebSocket server.", "8.17.1"),
+    CVEEntry("nodemailer",      "<6.9.9",   "CVE-2024-27448", Severity.MEDIUM,
+             "ReDoS via crafted email address parsing.", "6.9.9"),
+    CVEEntry("send",            "<0.19.0",  "CVE-2024-43799", Severity.MEDIUM,
+             "XSS via redirect with crafted Location header.", "0.19.0"),
+    CVEEntry("body-parser",     "<1.20.3",  "CVE-2024-45590", Severity.MEDIUM,
+             "DoS via URL-encoded payload causing high CPU usage.", "1.20.3"),
+    CVEEntry("path-to-regexp",  "<0.1.10",  "CVE-2024-45296", Severity.HIGH,
+             "ReDoS — regex backtracking on crafted path patterns.", "0.1.10"),
+    CVEEntry("micromatch",      "<4.0.8",   "CVE-2024-4067",  Severity.MEDIUM,
+             "ReDoS via malicious glob pattern.", "4.0.8"),
+    CVEEntry("vm2",             "<3.9.18",  "CVE-2023-29017", Severity.CRITICAL,
+             "Sandbox escape via Promise handler — full RCE on host.", "3.9.18"),
+    CVEEntry("vm2",             "<=3.9.19", "CVE-2023-37466", Severity.CRITICAL,
+             "Sandbox escape via Async generator — vm2 deprecated, no fix.", "DEPRECATED"),
+    CVEEntry("xlsx",            "<0.20.2",  "CVE-2024-22363", Severity.HIGH,
+             "Prototype pollution via crafted Excel files.", "0.20.2"),
+    CVEEntry("formidable",      "<3.5.1",   "CVE-2022-29622", Severity.HIGH,
+             "Arbitrary file upload via filename injection.", "3.5.1"),
+    CVEEntry("nanoid",          "<3.3.8",   "CVE-2024-55565", Severity.MEDIUM,
+             "Information disclosure via predictable IDs at non-default lengths.", "3.3.8"),
+    CVEEntry("rollup",          "<3.29.5",  "CVE-2024-47068", Severity.MEDIUM,
+             "DOM clobbering in dev-server output enables XSS.", "3.29.5"),
+    CVEEntry("cross-spawn",     "<7.0.5",   "CVE-2024-21538", Severity.HIGH,
+             "ReDoS via crafted command argument parsing.", "7.0.5"),
+    CVEEntry("axios",           "<1.8.2",   "CVE-2025-27152", Severity.HIGH,
+             "SSRF via absolute URL bypassing baseURL.", "1.8.2"),
+    CVEEntry("tar-fs",          "<3.0.7",   "CVE-2024-12905", Severity.HIGH,
+             "Path traversal allows write outside extraction directory.", "3.0.7"),
+    CVEEntry("dompurify",       "<3.2.4",   "CVE-2025-26791", Severity.HIGH,
+             "Mutation XSS bypass via crafted nesting.", "3.2.4"),
+    CVEEntry("electron",        "<28.3.2",  "CVE-2024-29131", Severity.CRITICAL,
+             "Renderer process can access Node.js APIs via prototype pollution.", "28.3.2"),
+]
+
+# ── Ruby CVEs ──────────────────────────────────────────────────────────────
+RUBY_CVES = [
+    CVEEntry("rails",       "<7.0.8.4", "CVE-2024-26143", Severity.HIGH,
+             "ReDoS in Action Controller's query parameter parsing.", "7.0.8.4"),
+    CVEEntry("rails",       "<7.0.8.1", "CVE-2024-26142", Severity.HIGH,
+             "Possible XSS via the strict-locals feature in Action View.", "7.0.8.1"),
+    CVEEntry("rack",        "<3.0.9.1", "CVE-2024-26141", Severity.MEDIUM,
+             "Possible DoS via Range header.", "3.0.9.1"),
+    CVEEntry("nokogiri",    "<1.16.5",  "CVE-2024-34459", Severity.HIGH,
+             "Out-of-bounds read in libxml2 dependency.", "1.16.5"),
+    CVEEntry("devise",      "<4.9.4",   "CVE-2023-49091", Severity.MEDIUM,
+             "Email enumeration via timing attack on confirmation flow.", "4.9.4"),
+    CVEEntry("puma",        "<6.4.3",   "CVE-2024-45614", Severity.HIGH,
+             "HTTP request smuggling via chunked encoding parsing.", "6.4.3"),
+]
+
+# ── Go CVEs ────────────────────────────────────────────────────────────────
+GO_CVES = [
+    CVEEntry("github.com/gin-gonic/gin", "<1.9.1", "CVE-2023-29401", Severity.HIGH,
+             "File path manipulation in Context.FileAttachment via unsanitized filename.", "1.9.1"),
+    CVEEntry("golang.org/x/net",         "<0.23.0", "CVE-2023-45288", Severity.HIGH,
+             "HTTP/2 rapid reset DoS amplification.", "0.23.0"),
+    CVEEntry("golang.org/x/crypto",      "<0.17.0", "CVE-2023-48795", Severity.HIGH,
+             "Terrapin attack: SSH prefix truncation of extension negotiation.", "0.17.0"),
+    CVEEntry("github.com/go-resty/resty/v2","<2.13.1","CVE-2024-30255",Severity.MEDIUM,
+             "Authorization header leaked on cross-origin redirect.", "2.13.1"),
+    CVEEntry("github.com/labstack/echo/v4","<4.12.0","CVE-2024-32869",Severity.HIGH,
+             "Open redirect via static file route bypassing path validation.", "4.12.0"),
 ]
 
 
 class DependencyScanner(BaseScanner):
     name = "Dependency Scanner"
 
+    def __init__(self, target_path: str, use_osv: bool = True):
+        super().__init__(target_path)
+        # Queue of (ecosystem, pkg, version, file_rel, line, snippet, install_cmd)
+        # populated by parsers and drained in a single batched OSV call.
+        self._dep_queue: list[tuple] = []
+        self._osv = OsvClient(enabled=use_osv)
+
     def scan(self) -> ScanResult:
         start = time.time()
         result = ScanResult(scanner_name=self.name)
 
+        # Pass 1: parse manifests/lockfiles and queue dependencies.
         self._scan_python(result)
         self._scan_javascript(result)
         self._scan_ruby(result)
         self._scan_go(result)
+        self._scan_lockfiles(result)
         self._check_security_tooling(result)
+
+        # Pass 2: batched OSV query (covers transitive + always-fresh CVEs)
+        # plus hardcoded fallback for offline scans / packages OSV doesn't know.
+        self._drain_queue_to_findings(result)
 
         result.scan_time_seconds = time.time() - start
         return result
+
+    # ── Queue helpers ──────────────────────────────────────────────────────
+
+    def _enqueue(self, ecosystem: str, pkg: str, version: str,
+                 file_rel: str, line, snippet: str, install_cmd: str):
+        if not pkg or not version:
+            return
+        self._dep_queue.append((ecosystem, pkg.lower(), version,
+                                file_rel, line, snippet, install_cmd))
+
+    def _drain_queue_to_findings(self, result: ScanResult):
+        if not self._dep_queue:
+            return
+
+        # Build OSV queries
+        osv_queries = []
+        for idx, (eco, pkg, ver, _frel, _ln, _snip, _cmd) in enumerate(self._dep_queue):
+            osv_queries.append(OsvQuery(eco, pkg, ver, ref=(idx,)))
+
+        osv_results = self._osv.query_packages(osv_queries) if self._osv.healthy else {}
+
+        # Track (pkg, version, vuln_id) we've already emitted to avoid dupes
+        # when the same dep appears in multiple files.
+        emitted: set[tuple[str, str, str]] = set()
+
+        for idx, dep in enumerate(self._dep_queue):
+            eco, pkg, ver, frel, ln, snip, cmd = dep
+            vulns = osv_results.get((idx,), [])
+
+            if vulns:
+                for v in vulns:
+                    key = (pkg, ver, v.id)
+                    if key in emitted:
+                        continue
+                    emitted.add(key)
+                    result.findings.append(_osv_finding(pkg, ver, frel, ln, snip, v, cmd))
+            else:
+                # Fallback: hardcoded CVE list (used when offline or pkg unknown to OSV)
+                self._fallback_match(eco, pkg, ver, frel, ln, snip, result, emitted)
+
+    def _fallback_match(self, ecosystem: str, pkg: str, version: str,
+                        file_rel: str, line, snippet: str,
+                        result: ScanResult, emitted: set):
+        cve_list = {
+            "PyPI": PYTHON_CVES,
+            "npm": JAVASCRIPT_CVES,
+            "RubyGems": RUBY_CVES,
+            "Go": GO_CVES,
+        }.get(ecosystem, [])
+        for entry in cve_list:
+            if entry.pkg.lower() != pkg or not _satisfies(version, entry.affected):
+                continue
+            key = (pkg, version, entry.cve)
+            if key in emitted:
+                continue
+            emitted.add(key)
+            result.findings.append(Finding(
+                title=f"Vulnerable Package: {pkg} ({entry.cve})",
+                severity=entry.severity,
+                category=Category.VULNERABLE_COMPONENTS,
+                file_path=file_rel,
+                line_number=line,
+                code_snippet=snippet,
+                description=f"{entry.desc} Affects versions {entry.affected}.",
+                recommendation=f"Upgrade to {pkg}>={entry.fix_version}",
+                cwe_id="CWE-1104",
+                attack_simulation=f"Public exploits exist for {entry.cve}.",
+                confidence=Confidence.CONFIRMED,
+            ))
+
+    def _scan_lockfiles(self, result: ScanResult):
+        """Parse lockfiles for transitive dependency resolution.
+
+        Lockfiles record the FULL resolved dep tree (including transitive
+        deps the developer never explicitly declared), which is where most
+        real-world supply-chain risk lives.
+        """
+        for root, dirs, files in os.walk(self.target_path):
+            dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not should_skip_dir(d)]
+            for fname in files:
+                fpath = os.path.join(root, fname)
+                rel = os.path.relpath(fpath, self.target_path)
+                low = fname.lower()
+                if low == "package-lock.json":
+                    self._parse_npm_lock(fpath, rel, result)
+                elif low == "yarn.lock":
+                    self._parse_yarn_lock(fpath, rel, result)
+                elif low == "pnpm-lock.yaml":
+                    self._parse_pnpm_lock(fpath, rel, result)
+                elif low == "poetry.lock":
+                    self._parse_poetry_lock(fpath, rel, result)
+                elif low == "pipfile.lock":
+                    self._parse_pipfile_lock(fpath, rel, result)
+                elif low == "go.sum":
+                    self._parse_go_sum(fpath, rel, result)
+                elif low == "gemfile.lock":
+                    self._parse_gemfile_lock(fpath, rel, result)
+
+    # ── Lockfile parsers (transitive deps) ─────────────────────────────────
+
+    def _parse_npm_lock(self, fpath: str, rel: str, result: ScanResult):
+        try:
+            with open(fpath, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            return
+        result.files_scanned += 1
+        # npm v7+ uses "packages" map keyed by node_modules path
+        packages = data.get("packages") or {}
+        for path, meta in packages.items():
+            if not path or path == "":
+                continue
+            name = meta.get("name") or path.split("node_modules/")[-1]
+            ver = meta.get("version")
+            if not ver:
+                continue
+            self._enqueue("npm", name, ver, rel, None,
+                          f'"{name}": "{ver}" (lockfile)',
+                          f"npm install {name}@latest")
+        # Fallback for lockfileVersion 1 with "dependencies" tree
+        if not packages:
+            self._walk_npm_deps(data.get("dependencies") or {}, rel, result)
+
+    def _walk_npm_deps(self, deps: dict, rel: str, result: ScanResult):
+        for name, meta in deps.items():
+            ver = (meta or {}).get("version")
+            if ver:
+                self._enqueue("npm", name, ver, rel, None,
+                              f'"{name}": "{ver}" (lockfile)',
+                              f"npm install {name}@latest")
+            sub = (meta or {}).get("dependencies") or {}
+            if sub:
+                self._walk_npm_deps(sub, rel, result)
+
+    def _parse_yarn_lock(self, fpath: str, rel: str, result: ScanResult):
+        try:
+            with open(fpath, "r", encoding="utf-8") as f:
+                content = f.read()
+        except OSError:
+            return
+        result.files_scanned += 1
+        # yarn.lock blocks: `name@spec, name@spec:\n  version "x.y.z"`
+        for m in re.finditer(
+            r'^"?([@a-zA-Z0-9._/-]+?)@[^"\n,]+(?:,[^\n]+)?:\s*\n(?:[^\n]*\n)*?\s*version\s+"([^"]+)"',
+            content, re.MULTILINE,
+        ):
+            self._enqueue("npm", m.group(1), m.group(2), rel, None,
+                          f'{m.group(1)}@{m.group(2)} (yarn.lock)',
+                          f"yarn upgrade {m.group(1)}")
+
+    def _parse_pnpm_lock(self, fpath: str, rel: str, result: ScanResult):
+        try:
+            with open(fpath, "r", encoding="utf-8") as f:
+                content = f.read()
+        except OSError:
+            return
+        result.files_scanned += 1
+        # pnpm: `/pkgname@x.y.z:` keys
+        for m in re.finditer(r"^\s+/([^@\s]+(?:/[^@\s]+)?)@([\d][^:\s(]+)", content, re.MULTILINE):
+            self._enqueue("npm", m.group(1), m.group(2), rel, None,
+                          f'{m.group(1)}@{m.group(2)} (pnpm-lock.yaml)',
+                          f"pnpm update {m.group(1)}")
+
+    def _parse_poetry_lock(self, fpath: str, rel: str, result: ScanResult):
+        try:
+            with open(fpath, "r", encoding="utf-8") as f:
+                content = f.read()
+        except OSError:
+            return
+        result.files_scanned += 1
+        # Poetry blocks: [[package]]\nname = "x"\nversion = "y"
+        for m in re.finditer(
+            r'\[\[package\]\]\s*\nname\s*=\s*"([^"]+)"\s*\nversion\s*=\s*"([^"]+)"',
+            content,
+        ):
+            self._enqueue("PyPI", m.group(1), m.group(2), rel, None,
+                          f'{m.group(1)}=={m.group(2)} (poetry.lock)',
+                          f"poetry update {m.group(1)}")
+
+    def _parse_pipfile_lock(self, fpath: str, rel: str, result: ScanResult):
+        try:
+            with open(fpath, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            return
+        result.files_scanned += 1
+        for section in ("default", "develop"):
+            for name, meta in (data.get(section) or {}).items():
+                ver = (meta or {}).get("version", "").lstrip("=")
+                if ver:
+                    self._enqueue("PyPI", name, ver, rel, None,
+                                  f'{name}=={ver} (Pipfile.lock)',
+                                  f"pipenv update {name}")
+
+    def _parse_go_sum(self, fpath: str, rel: str, result: ScanResult):
+        try:
+            with open(fpath, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+        except OSError:
+            return
+        result.files_scanned += 1
+        seen: set[tuple[str, str]] = set()
+        for line in lines:
+            # `module v1.2.3 h1:...` — ignore /go.mod lines
+            m = re.match(r"^(\S+)\s+v([\d][^\s/]+)(?:/go\.mod)?\s", line)
+            if not m:
+                continue
+            mod, ver = m.group(1), m.group(2)
+            if (mod, ver) in seen:
+                continue
+            seen.add((mod, ver))
+            self._enqueue("Go", mod, ver, rel, None,
+                          f"{mod}@v{ver} (go.sum)",
+                          f"go get {mod}@latest")
+
+    def _parse_gemfile_lock(self, fpath: str, rel: str, result: ScanResult):
+        try:
+            with open(fpath, "r", encoding="utf-8") as f:
+                content = f.read()
+        except OSError:
+            return
+        result.files_scanned += 1
+        # Gemfile.lock GEM specs section: `    gemname (1.2.3)`
+        in_gem = False
+        for line in content.splitlines():
+            if line.startswith("GEM"):
+                in_gem = True
+                continue
+            if in_gem and (line.startswith("PLATFORMS") or line.startswith("DEPENDENCIES")):
+                in_gem = False
+            if in_gem:
+                m = re.match(r"^    ([a-zA-Z0-9_-]+) \(([\d][^\)]+)\)", line)
+                if m:
+                    self._enqueue("RubyGems", m.group(1), m.group(2), rel, None,
+                                  f"{m.group(1)} ({m.group(2)}) (Gemfile.lock)",
+                                  f"bundle update {m.group(1)}")
 
     # ── Python ─────────────────────────────────────────────────────────────
 
     def _scan_python(self, result: ScanResult):
         for root, dirs, files in os.walk(self.target_path):
-            dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+            dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not should_skip_dir(d)]
             for fname in files:
                 fpath = os.path.join(root, fname)
                 if fname.startswith("requirements") and fname.endswith(".txt"):
@@ -251,6 +651,7 @@ class DependencyScanner(BaseScanner):
                 ),
                 cwe_id="CWE-1104",
                 attack_simulation=f"Public exploits exist for {entry.cve}. Attackers scan for this version via banner or dependency confusion.",
+                confidence=Confidence.CONFIRMED,
             ))
 
     def _check_requirements_txt(self, file_path: str, result: ScanResult):
@@ -287,7 +688,8 @@ class DependencyScanner(BaseScanner):
                 ))
 
             if version:
-                self._match_python_cves(pkg, version, file_path, i, s, result)
+                self._enqueue("PyPI", pkg, version, rel, i, s,
+                              f"pip install --upgrade {pkg}")
 
     def _check_pipfile(self, file_path: str, result: ScanResult):
         try:
@@ -300,7 +702,9 @@ class DependencyScanner(BaseScanner):
             pkg, spec = m.group(1).lower(), m.group(2)
             version = _clean_version(spec.replace("*", ""))
             if version:
-                self._match_python_cves(pkg, version, file_path, None, f'{pkg} = "{spec}"', result)
+                self._enqueue("PyPI", pkg, version, rel, None,
+                              f'{pkg} = "{spec}"',
+                              f"pipenv update {pkg}")
 
     def _check_pyproject_toml(self, file_path: str, result: ScanResult):
         try:
@@ -314,13 +718,15 @@ class DependencyScanner(BaseScanner):
             pkg, spec = m.group(1).lower(), m.group(2).strip()
             version = _clean_version(spec)
             if version:
-                self._match_python_cves(pkg, version, file_path, None, f'{pkg}{spec}', result)
+                self._enqueue("PyPI", pkg, version, rel, None,
+                              f'{pkg}{spec}',
+                              f"poetry update {pkg}")
 
     # ── JavaScript / Node ──────────────────────────────────────────────────
 
     def _scan_javascript(self, result: ScanResult):
         for root, dirs, files in os.walk(self.target_path):
-            dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+            dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not should_skip_dir(d)]
             if "package.json" in files:
                 fpath = os.path.join(root, "package.json")
                 result.files_scanned += 1
@@ -356,26 +762,10 @@ class DependencyScanner(BaseScanner):
                     continue
 
                 version = _clean_version(str(version_spec))
-                for entry in JAVASCRIPT_CVES:
-                    if entry.pkg != pkg_lower:
-                        continue
-                    if not version or not _satisfies(version, entry.affected):
-                        continue
-                    result.findings.append(Finding(
-                        title=f"Vulnerable Package: {pkg_name} ({entry.cve})",
-                        severity=entry.severity,
-                        category=Category.VULNERABLE_COMPONENTS,
-                        file_path=rel,
-                        line_number=None,
-                        code_snippet=f'"{pkg_name}": "{version_spec}"',
-                        description=f"{entry.desc} Affects versions {entry.affected}.",
-                        recommendation=(
-                            f"Upgrade: npm install {pkg_name}@{entry.fix_version}\n"
-                            "Then run: npm audit fix"
-                        ),
-                        cwe_id="CWE-1104",
-                        attack_simulation=f"Public PoC exists for {entry.cve}. Run: npm audit to confirm.",
-                    ))
+                if version:
+                    self._enqueue("npm", pkg_name, version, rel, None,
+                                  f'"{pkg_name}": "{version_spec}"',
+                                  f"npm install {pkg_name}@latest")
 
         # Dangerous lifecycle scripts
         scripts = data.get("scripts", {})
@@ -430,32 +820,16 @@ class DependencyScanner(BaseScanner):
             return
 
         rel = os.path.relpath(gemfile, self.target_path)
-        RUBY_CVES = {
-            "rails":     ("<7.0.8", "CVE-2024-26143", "XSS via redirect_to with untrusted URL"),
-            "devise":    ("<4.9.3", "CVE-2019-5421",  "Open redirect in Devise email confirmation"),
-            "nokogiri":  ("<1.16.5","CVE-2024-34459", "Buffer overflow in libxml2 used by Nokogiri"),
-            "rack":      ("<3.0.10","CVE-2024-26141", "DoS via crafted multipart body parsing"),
-        }
         for i, line in enumerate(lines, 1):
             m = re.match(r"""\s*gem\s+['"]([A-Za-z0-9_-]+)['"]\s*(?:,\s*['"]([^'"]+)['"])?""", line)
             if not m:
                 continue
             gem, spec = m.group(1).lower(), m.group(2) or ""
             version = _clean_version(spec)
-            if gem in RUBY_CVES:
-                affected, cve, desc = RUBY_CVES[gem]
-                if version and _satisfies(version, affected):
-                    result.findings.append(Finding(
-                        title=f"Vulnerable Gem: {gem} ({cve})",
-                        severity=Severity.HIGH,
-                        category=Category.VULNERABLE_COMPONENTS,
-                        file_path=rel,
-                        line_number=i,
-                        code_snippet=line.strip(),
-                        description=f"{desc}. Affects versions {affected}.",
-                        recommendation=f"Update in Gemfile: gem '{gem}', '>= <fixed_version>'\nThen: bundle update {gem}",
-                        cwe_id="CWE-1104",
-                    ))
+            if not version:
+                continue
+            self._enqueue("RubyGems", gem, version, rel, i,
+                          line.strip(), f"bundle update {gem}")
 
     # ── Go ─────────────────────────────────────────────────────────────────
 
@@ -471,30 +845,13 @@ class DependencyScanner(BaseScanner):
             return
 
         rel = os.path.relpath(gomod, self.target_path)
-        GO_CVES = {
-            "golang.org/x/net":    ("<0.23.0", "CVE-2023-44487", "HTTP/2 rapid reset DoS (CVSS 7.5)"),
-            "golang.org/x/crypto": ("<0.17.0", "CVE-2023-48795", "SSH prefix truncation (Terrapin)"),
-            "github.com/golang-jwt/jwt/v5": ("<5.2.1", "CVE-2024-28180", "Excessive memory usage parsing malformed JWTs"),
-        }
         for i, line in enumerate(lines, 1):
             m = re.match(r"\s+(\S+)\s+v([\d.]+)", line)
             if not m:
                 continue
-            mod, version = m.group(1).lower(), m.group(2)
-            if mod in GO_CVES:
-                affected, cve, desc = GO_CVES[mod]
-                if _satisfies(version, affected):
-                    result.findings.append(Finding(
-                        title=f"Vulnerable Go Module: {mod} ({cve})",
-                        severity=Severity.HIGH,
-                        category=Category.VULNERABLE_COMPONENTS,
-                        file_path=rel,
-                        line_number=i,
-                        code_snippet=line.strip(),
-                        description=f"{desc}. Affects versions {affected}.",
-                        recommendation=f"go get {mod}@latest",
-                        cwe_id="CWE-1104",
-                    ))
+            mod, version = m.group(1), m.group(2)
+            self._enqueue("Go", mod, version, rel, i,
+                          line.strip(), f"go get {mod}@latest")
 
     # ── Security tooling checks ────────────────────────────────────────────
 

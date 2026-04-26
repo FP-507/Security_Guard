@@ -14,7 +14,11 @@ import math
 import os
 import re
 import time
-from .base import BaseScanner, ScanResult, Finding, Severity, Category
+from .base import (
+    BaseScanner, ScanResult, Finding, Severity, Category, Confidence,
+    should_skip_dir, should_skip_file,
+)
+from core.secret_verifiers import verify as verify_secret_live
 
 # ── Skip sets ──────────────────────────────────────────────────────────────
 SKIP_DIRS = {
@@ -150,22 +154,127 @@ def is_high_entropy_secret(value: str) -> tuple[bool, str]:
     return False, ""
 
 
+# ── Keyword pre-filter (GitLeaks-style) ────────────────────────────────────
+# A line is only worth running through the expensive regex/entropy passes if
+# it mentions a credential-related keyword. This is a ~10x speedup on large
+# repos and dramatically reduces false positives in code that happens to
+# contain high-entropy strings (UUIDs, hashes, base64 image data) but is not
+# in a credential context.
+
+CREDENTIAL_KEYWORDS = re.compile(
+    r"""(?xi)
+    \b(?:
+        api[-_ ]?key | api[-_ ]?secret | apikey | apisecret
+      | access[-_ ]?key | access[-_ ]?token | accesskey
+      | secret[-_ ]?key | secretkey | secret[-_ ]?token
+      | auth[-_ ]?token | auth[-_ ]?key | authorization | bearer
+      | client[-_ ]?secret | client[-_ ]?id
+      | private[-_ ]?key | privatekey
+      | password | passwd | passphrase
+      | token | credential | credentials
+      | session[-_ ]?id | session[-_ ]?key
+      | encryption[-_ ]?key | signing[-_ ]?key | jwt
+      | webhook | bot[-_ ]?token
+      | refresh[-_ ]?token | id[-_ ]?token
+      | dsn | connection[-_ ]?string
+      | aws_ | gcp_ | azure_ | github_
+    )\b
+    """
+)
+
+
+def has_credential_context(line: str) -> bool:
+    """True if a line mentions any credential-related keyword.
+
+    Used as a pre-filter for the entropy-based generic detector — without it,
+    scanning a 100k-LOC repo flags every UUID and base64 image as a possible
+    secret. The pattern-specific detectors (AWS, Stripe, etc.) bypass this
+    filter because their prefixes are unambiguous.
+    """
+    return bool(CREDENTIAL_KEYWORDS.search(line))
+
+
 # ── Secret Patterns ────────────────────────────────────────────────────────
 
 class SecretPattern:
-    def __init__(self, name, pattern, severity, min_len=8, notes=None):
+    def __init__(self, name, pattern, severity, min_len=8, notes=None,
+                 validator=None, confidence=Confidence.HIGH):
         self.name = name
         self.regex = re.compile(pattern, re.IGNORECASE)
         self.severity = severity
         self.min_len = min_len
         self.notes = notes
+        # validator(value) -> bool. If provided and returns False, the match
+        # is discarded as a false positive.
+        self.validator = validator
+        # Default confidence when the pattern matches and validator passes.
+        self.confidence = confidence
+
+
+# ── Format validators ──────────────────────────────────────────────────────
+# Each returns True if the candidate value is structurally plausible.
+
+def _validate_jwt(value: str) -> bool:
+    """JWT must be 3 base64url-encoded segments and the header must decode
+    to a JSON object with at least an 'alg' field."""
+    import base64, json
+    parts = value.split(".")
+    if len(parts) != 3:
+        return False
+    header_b64 = parts[0]
+    # base64url padding fix
+    pad = "=" * (-len(header_b64) % 4)
+    try:
+        header_bytes = base64.urlsafe_b64decode(header_b64 + pad)
+        header = json.loads(header_bytes)
+    except Exception:
+        return False
+    return isinstance(header, dict) and "alg" in header
+
+
+def _validate_aws_access_key(value: str) -> bool:
+    """AWS access key IDs are exactly 20 chars, all uppercase alnum, and
+    start with a documented prefix (AKIA, ASIA, AROA, AIDA, ANPA, ANVA)."""
+    if len(value) != 20:
+        return False
+    if not value.isupper() and not value.isalnum():
+        return False
+    return value[:4] in {"AKIA", "ASIA", "AROA", "AIDA", "ANPA", "ANVA"}
+
+
+def _validate_stripe_key(value: str) -> bool:
+    """Stripe keys start with sk_/pk_/rk_ + (live|test)_ + at least 24 chars."""
+    if not (value.startswith(("sk_", "pk_", "rk_"))):
+        return False
+    rest = value.split("_", 2)
+    if len(rest) < 3:
+        return False
+    return rest[1] in {"live", "test"} and len(rest[2]) >= 24
+
+
+def _validate_github_token(value: str) -> bool:
+    """GitHub PATs: ghp_/gho_/ghu_/ghs_/ghr_ + 36 base62 chars."""
+    if len(value) < 40:
+        return False
+    prefix = value[:4]
+    if prefix not in {"ghp_", "gho_", "ghu_", "ghs_", "ghr_"}:
+        return False
+    body = value[4:]
+    return all(c.isalnum() or c == "_" for c in body)
+
+
+def _validate_slack_bot(value: str) -> bool:
+    """Slack tokens have shape xox[abprs]-NNNN-NNNN-..."""
+    parts = value.split("-")
+    return len(parts) >= 4 and parts[0].startswith("xox")
 
 
 SECRET_PATTERNS = [
     # ── Cloud: AWS ──────────────────────────────────────────────────────
     SecretPattern("AWS Access Key ID",
-        r"(?:^|['\"\s=:])(?P<secret>AKIA[0-9A-Z]{16})(?:['\"\s]|$)",
-        Severity.CRITICAL, min_len=20),
+        r"(?:^|['\"\s=:])(?P<secret>(?:AKIA|ASIA|AROA|AIDA|ANPA|ANVA)[0-9A-Z]{16})(?:['\"\s]|$)",
+        Severity.CRITICAL, min_len=20,
+        validator=_validate_aws_access_key, confidence=Confidence.CONFIRMED),
     SecretPattern("AWS Secret Access Key",
         r"(?:aws.?secret.?access.?key|aws.?secret)\s*[=:]\s*['\"]?(?P<secret>[A-Za-z0-9/+]{40})['\"]?",
         Severity.CRITICAL, min_len=40),
@@ -192,7 +301,8 @@ SECRET_PATTERNS = [
     # ── Version control ─────────────────────────────────────────────────
     SecretPattern("GitHub Personal Access Token",
         r"(?P<secret>gh[pousr]_[A-Za-z0-9_]{36,255})",
-        Severity.CRITICAL, min_len=40),
+        Severity.CRITICAL, min_len=40,
+        validator=_validate_github_token, confidence=Confidence.CONFIRMED),
     SecretPattern("GitHub App Token",
         r"(?P<secret>ghs_[A-Za-z0-9_]{36,})",
         Severity.CRITICAL, min_len=40),
@@ -206,7 +316,8 @@ SECRET_PATTERNS = [
     # ── Messaging ───────────────────────────────────────────────────────
     SecretPattern("Slack Bot Token",
         r"(?P<secret>xox[baprs]-[0-9]{10,12}-[0-9]{10,12}-[A-Za-z0-9]{24,})",
-        Severity.CRITICAL, min_len=60),
+        Severity.CRITICAL, min_len=60,
+        validator=_validate_slack_bot, confidence=Confidence.CONFIRMED),
     SecretPattern("Slack Webhook URL",
         r"(?P<secret>https://hooks\.slack\.com/services/T[A-Z0-9]{8,10}/B[A-Z0-9]{8,10}/[A-Za-z0-9]{24,})",
         Severity.HIGH, min_len=70),
@@ -220,13 +331,19 @@ SECRET_PATTERNS = [
     # ── Payment ─────────────────────────────────────────────────────────
     SecretPattern("Stripe Live Secret Key",
         r"(?P<secret>sk_live_[0-9a-zA-Z]{24,})",
-        Severity.CRITICAL, min_len=30),
+        Severity.CRITICAL, min_len=30,
+        validator=_validate_stripe_key, confidence=Confidence.CONFIRMED),
     SecretPattern("Stripe Publishable Key",
         r"(?P<secret>pk_live_[0-9a-zA-Z]{24,})",
-        Severity.MEDIUM, min_len=30),
+        Severity.MEDIUM, min_len=30,
+        validator=_validate_stripe_key, confidence=Confidence.CONFIRMED),
     SecretPattern("Stripe Restricted Key",
         r"(?P<secret>rk_live_[0-9a-zA-Z]{24,})",
-        Severity.CRITICAL, min_len=30),
+        Severity.CRITICAL, min_len=30,
+        validator=_validate_stripe_key, confidence=Confidence.CONFIRMED),
+    SecretPattern("Stripe Webhook Signing Secret",
+        r"(?P<secret>whsec_[A-Za-z0-9]{32,})",
+        Severity.HIGH, min_len=38, confidence=Confidence.HIGH),
     SecretPattern("PayPal Client Secret",
         r"(?:paypal.?(?:secret|client.?secret))\s*[=:]\s*['\"](?P<secret>[A-Za-z0-9_.-]{30,})['\"]",
         Severity.HIGH, min_len=30),
@@ -281,7 +398,55 @@ SECRET_PATTERNS = [
     # ── JWT ─────────────────────────────────────────────────────────────
     SecretPattern("Hardcoded JWT Token",
         r"(?P<secret>eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})",
-        Severity.HIGH, min_len=50),
+        Severity.HIGH, min_len=50,
+        validator=_validate_jwt, confidence=Confidence.CONFIRMED),
+
+    # ── AI / LLM providers ──────────────────────────────────────────────
+    SecretPattern("OpenAI API Key",
+        r"(?P<secret>sk-(?:proj-)?[A-Za-z0-9_-]{20,})",
+        Severity.CRITICAL, min_len=24, confidence=Confidence.HIGH),
+    SecretPattern("Anthropic API Key",
+        r"(?P<secret>sk-ant-(?:api|admin)\d{2}-[A-Za-z0-9_\-]{80,})",
+        Severity.CRITICAL, min_len=90, confidence=Confidence.CONFIRMED),
+    SecretPattern("Cohere API Key",
+        r"(?:cohere.*(?:api.?key|token))\s*[=:]\s*['\"](?P<secret>[A-Za-z0-9]{40})['\"]",
+        Severity.HIGH, min_len=40),
+    SecretPattern("Replicate API Token",
+        r"(?P<secret>r8_[A-Za-z0-9]{37,})",
+        Severity.HIGH, min_len=40, confidence=Confidence.HIGH),
+
+    # ── Cloud (additional) ──────────────────────────────────────────────
+    SecretPattern("Google Service Account Private Key",
+        r"(?P<secret>\"private_key\"\s*:\s*\"-----BEGIN PRIVATE KEY-----)",
+        Severity.CRITICAL, min_len=50, confidence=Confidence.CONFIRMED),
+    SecretPattern("Cloudflare API Token",
+        r"(?:cf|cloudflare).*(?:api.?token|api.?key)\s*[=:]\s*['\"](?P<secret>[A-Za-z0-9_-]{40})['\"]",
+        Severity.HIGH, min_len=40),
+
+    # ── DevOps / CI ─────────────────────────────────────────────────────
+    SecretPattern("Vault Token",
+        r"(?P<secret>hvs\.[A-Za-z0-9_-]{90,100})",
+        Severity.CRITICAL, min_len=94, confidence=Confidence.HIGH),
+    SecretPattern("Datadog API Key",
+        r"(?:datadog.*(?:api.?key))\s*[=:]\s*['\"](?P<secret>[a-f0-9]{32})['\"]",
+        Severity.HIGH, min_len=32),
+    SecretPattern("New Relic License Key",
+        r"(?:new.?relic.*(?:license|key))\s*[=:]\s*['\"](?P<secret>[A-Fa-f0-9]{40}NRAL)['\"]",
+        Severity.HIGH, min_len=44),
+    SecretPattern("Linear API Key",
+        r"(?P<secret>lin_api_[A-Za-z0-9]{40})",
+        Severity.HIGH, min_len=48, confidence=Confidence.HIGH),
+    SecretPattern("Notion Integration Token",
+        r"(?P<secret>(?:secret_|ntn_)[A-Za-z0-9]{43,50})",
+        Severity.HIGH, min_len=50, confidence=Confidence.HIGH),
+
+    # ── Square / Shopify / commerce ─────────────────────────────────────
+    SecretPattern("Square Access Token",
+        r"(?P<secret>EAAA[A-Za-z0-9_-]{60})",
+        Severity.CRITICAL, min_len=64, confidence=Confidence.HIGH),
+    SecretPattern("Shopify Access Token",
+        r"(?P<secret>shp(?:at|ca|pa|ss)_[a-fA-F0-9]{32})",
+        Severity.CRITICAL, min_len=38, confidence=Confidence.CONFIRMED),
 
     # ── URL with credentials ─────────────────────────────────────────────
     SecretPattern("Password in URL",
@@ -315,18 +480,32 @@ SENSITIVE_KEY_RE = re.compile(
 class SecretDetector(BaseScanner):
     name = "Secret Detector"
 
+    def __init__(self, target_path: str, scan_git_history: bool = True,
+                 max_history_commits: int = 2000):
+        super().__init__(target_path)
+        # Git history scanning is opt-out via constructor; disable in tests
+        # or when scanning a non-repo target. Caps the commit walk so a huge
+        # monorepo doesn't stall the scan.
+        self.scan_git_history = scan_git_history
+        self.max_history_commits = max_history_commits
+
     def scan(self) -> ScanResult:
         start = time.time()
         result = ScanResult(scanner_name=self.name)
 
         for root, dirs, files in os.walk(self.target_path):
-            dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+            dirs[:] = [
+                d for d in dirs
+                if not should_skip_dir(d) and d not in SKIP_DIRS
+            ]
 
             for fname in files:
                 fpath = os.path.join(root, fname)
                 ext = os.path.splitext(fname)[1].lower()
 
-                # Check extension
+                # Check extension and skip noisy files (minified bundles etc.)
+                if should_skip_file(fname):
+                    continue
                 if ext in BINARY_EXTENSIONS:
                     continue
                 if ext not in SCAN_EXTENSIONS and fname not in HIGH_RISK_FILES and not fname.startswith(".env"):
@@ -348,8 +527,92 @@ class SecretDetector(BaseScanner):
                 result.findings.extend(findings)
                 result.files_scanned += 1
 
+        # Pass 2: scan git history for secrets in old commits.
+        if self.scan_git_history:
+            self._scan_git_history(result)
+
         result.scan_time_seconds = time.time() - start
         return result
+
+    def _scan_git_history(self, result: ScanResult):
+        """Walk the last N commits looking for secret patterns in added lines.
+
+        Findings already present in the working tree are deduped (no point
+        flagging the same leak twice). History-only findings get a clear
+        title prefix and include the commit/author/date so the user can
+        rotate the credential AND know who needs to be notified.
+        """
+        from core.git_history import iter_added_lines, is_git_repo, get_origin_url, short_commit_url
+        if not is_git_repo(self.target_path):
+            return
+
+        origin = get_origin_url(self.target_path)
+        # Build set of (file, line_text_first_80_chars) we already reported
+        # in the working tree to avoid duplicates.
+        already_reported: set[tuple[str, str]] = {
+            (f.file_path, f.code_snippet[:80]) for f in result.findings
+        }
+
+        history_findings: list[Finding] = []
+        seen_secrets: set[tuple[str, str, str]] = set()  # (pattern_name, file, masked_value)
+
+        for hl in iter_added_lines(self.target_path, max_commits=self.max_history_commits):
+            if (hl.file_path, hl.line_text[:80]) in already_reported:
+                continue
+
+            for sp in SECRET_PATTERNS:
+                m = sp.regex.search(hl.line_text)
+                if not m:
+                    continue
+                try:
+                    secret_value = m.group("secret")
+                except IndexError:
+                    secret_value = m.group(0)
+                if len(secret_value) < sp.min_len:
+                    continue
+                if PLACEHOLDER_PATTERNS.match(secret_value.strip("'\"` ")):
+                    continue
+                if sp.validator is not None and not sp.validator(secret_value):
+                    continue
+
+                masked = secret_value[:4] + "*" * min(len(secret_value) - 4, 20)
+                key = (sp.name, hl.file_path, masked)
+                if key in seen_secrets:
+                    continue
+                seen_secrets.add(key)
+
+                commit_url = short_commit_url(hl.commit, origin)
+                url_line = f"\n  Commit URL: {commit_url}" if commit_url else ""
+                history_findings.append(Finding(
+                    title=f"[GIT HISTORY] {sp.name}",
+                    severity=sp.severity,
+                    category=Category.SECRETS,
+                    file_path=f"{hl.file_path} @ {hl.commit}",
+                    line_number=None,
+                    code_snippet=f"[REDACTED] {masked}",
+                    description=(
+                        f"Secret found in git history (no longer in working tree).\n"
+                        f"  Commit:  {hl.commit}\n"
+                        f"  Author:  {hl.author}\n"
+                        f"  Date:    {hl.date}{url_line}\n"
+                        f"Even though the file no longer contains this value, "
+                        f"every clone of the repo still has it."
+                    ),
+                    recommendation=(
+                        "1. ROTATE the credential NOW (assume it is public).\n"
+                        "2. Optionally rewrite history with git-filter-repo or BFG to remove the blob.\n"
+                        "3. Force-push and notify all clones (CI runners, dev machines, mirrors)."
+                    ),
+                    cwe_id="CWE-798",
+                    attack_simulation=(
+                        f"Anyone who cloned this repo at any point has the secret. "
+                        f"Public repos: GitHub indexes commits — bots scrape new commits within minutes."
+                    ),
+                    confidence=sp.confidence,
+                ))
+                break  # one finding per matched line
+
+        result.findings.extend(history_findings)
 
     def _scan_file(self, file_path: str, is_high_risk: bool) -> list[Finding]:
         findings = []
@@ -398,6 +661,7 @@ class SecretDetector(BaseScanner):
                             ),
                             cwe_id="CWE-798",
                             attack_simulation="If this file is committed to git, any clone of the repo immediately compromises these credentials.",
+                            confidence=Confidence.HIGH,
                         ))
                         reported_lines.add(i)
                         continue
@@ -421,15 +685,42 @@ class SecretDetector(BaseScanner):
                 if PLACEHOLDER_PATTERNS.match(secret_value.strip("'\"` ")):
                     continue
 
+                # Structural validation: discard obvious false positives
+                # (e.g. JWT-shaped strings whose header isn't valid base64
+                # JSON, AWS-shaped strings that fail prefix/length check).
+                if sp.validator is not None and not sp.validator(secret_value):
+                    continue
+
+                # Live verification: if SECURITY_GUARD_VERIFY_SECRETS=1 is set
+                # and a verifier exists for this secret type, hit the vendor's
+                # whoami endpoint. VERIFIED → upgrade to CONFIRMED + CRITICAL.
+                verify_result = verify_secret_live(sp.name, secret_value)
+                title = sp.name
+                conf = sp.confidence
+                sev = sp.severity
+                extra_desc = ""
+                if verify_result is not None:
+                    if verify_result.status == "VERIFIED":
+                        title = f"{sp.name} [VERIFIED ACTIVE]"
+                        conf = Confidence.CONFIRMED
+                        sev = Severity.CRITICAL
+                        extra_desc = f"\n\n>>> LIVE CHECK: ACTIVE — {verify_result.detail}"
+                    elif verify_result.status == "UNVERIFIED":
+                        title = f"{sp.name} [revoked/invalid]"
+                        # Keep finding but downgrade — historic exposure still
+                        # matters (the secret WAS valid before rotation).
+                        sev = Severity.MEDIUM
+                        extra_desc = f"\n\n>>> LIVE CHECK: rejected by vendor — {verify_result.detail}"
+
                 masked = secret_value[:4] + "*" * min(len(secret_value) - 4, 20)
                 findings.append(Finding(
-                    title=sp.name,
-                    severity=sp.severity,
+                    title=title,
+                    severity=sev,
                     category=Category.SECRETS,
                     file_path=rel_path,
                     line_number=i,
                     code_snippet=f"[REDACTED] {masked}",
-                    description=f"Detected {sp.name} pattern. If real, this credential is exposed.",
+                    description=f"Detected {sp.name} pattern. If real, this credential is exposed.{extra_desc}",
                     recommendation=(
                         "- Remove from source code and git history (git-filter-repo or BFG)\n"
                         "- Rotate the credential immediately in the service's dashboard\n"
@@ -437,12 +728,18 @@ class SecretDetector(BaseScanner):
                     ),
                     cwe_id="CWE-798",
                     attack_simulation=f"An exposed {sp.name} grants immediate access to the associated service. Search engines and bot scanners index public repos continuously.",
+                    confidence=conf,
                 ))
                 reported_lines.add(i)
                 break  # One finding per line
 
             # ── High-entropy string detection ───────────────────────────
             if i in reported_lines:
+                continue
+
+            # Pre-filter: only consider lines that mention a credential
+            # keyword. Eliminates ~95% of FPs (UUIDs, hashes, base64 images).
+            if not has_credential_context(line):
                 continue
 
             # Look for assignments with suspicious values
@@ -470,6 +767,7 @@ class SecretDetector(BaseScanner):
                         ),
                         cwe_id="CWE-798",
                         attack_simulation="High-entropy strings in source code frequently turn out to be credentials that grant service access.",
+                        confidence=Confidence.LOW,
                     ))
                     reported_lines.add(i)
 

@@ -2,7 +2,8 @@
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
+from typing import Optional, Iterable
+import os
 
 
 class Severity(Enum):
@@ -23,6 +24,30 @@ class Severity(Enum):
         }[self.value]
 
 
+class Confidence(Enum):
+    """How confident the scanner is that a finding is a true positive.
+
+    - CONFIRMED: validated (e.g. AWS key checksum passes, AST taint flow proven)
+    - HIGH: strong signal, low historical false-positive rate
+    - MEDIUM: pattern matches but context could not be fully verified
+    - LOW: heuristic / entropy-based; review manually
+    """
+
+    CONFIRMED = "CONFIRMED"
+    HIGH = "HIGH"
+    MEDIUM = "MEDIUM"
+    LOW = "LOW"
+
+    @property
+    def weight(self) -> float:
+        return {
+            "CONFIRMED": 1.0,
+            "HIGH": 0.85,
+            "MEDIUM": 0.6,
+            "LOW": 0.35,
+        }[self.value]
+
+
 class Category(Enum):
     INJECTION = "Injection (A03:2021)"
     BROKEN_AUTH = "Broken Authentication (A07:2021)"
@@ -39,6 +64,71 @@ class Category(Enum):
     CRYPTO = "Weak Cryptography (A02:2021)"
 
 
+# Directories that almost always produce noise (third-party code, build output,
+# version control, virtualenvs, IDE caches). Scanners should skip these to reduce
+# false positives and dramatically speed up scans on large repos.
+SKIP_DIRS: frozenset[str] = frozenset({
+    # VCS
+    ".git", ".hg", ".svn",
+    # Python
+    "__pycache__", ".venv", "venv", "env", ".tox", ".mypy_cache",
+    ".pytest_cache", ".ruff_cache", "site-packages", "egg-info",
+    # JS / TS
+    "node_modules", "bower_components", ".next", ".nuxt", ".cache",
+    "dist", "build", "out", ".parcel-cache", ".turbo",
+    # Ruby / PHP / Java / Go
+    "vendor", "target", ".gradle", ".idea", ".m2",
+    # Misc
+    "coverage", "htmlcov", ".coverage", ".nyc_output",
+    "reports",  # security-guard's own reports dir
+    ".DS_Store",
+})
+
+# File patterns where matches are almost always noise (minified, source maps,
+# bundled vendor files, lockfiles). Scanners should skip these.
+SKIP_FILE_SUFFIXES: tuple[str, ...] = (
+    ".min.js", ".min.css", ".bundle.js", ".chunk.js",
+    ".map", ".lock",
+    ".pyc", ".pyo", ".so", ".dll", ".dylib", ".class", ".jar", ".war",
+    ".png", ".jpg", ".jpeg", ".gif", ".ico", ".svg", ".webp",
+    ".pdf", ".zip", ".tar", ".gz", ".7z",
+    ".woff", ".woff2", ".ttf", ".eot",
+)
+
+
+def should_skip_dir(dirname: str) -> bool:
+    """True if a directory name should be excluded from scanning."""
+    return dirname in SKIP_DIRS or dirname.endswith(".egg-info")
+
+
+def should_skip_file(filename: str) -> bool:
+    """True if a filename should be excluded (minified, binary, lockfile)."""
+    lower = filename.lower()
+    return any(lower.endswith(suf) for suf in SKIP_FILE_SUFFIXES)
+
+
+def iter_source_files(
+    root: str,
+    extensions: Optional[Iterable[str]] = None,
+) -> Iterable[str]:
+    """Walk `root` yielding absolute file paths, skipping vendored/build dirs.
+
+    Pass `extensions` (e.g. {".py", ".js"}) to filter by suffix.
+    """
+    ext_set = {e.lower() for e in extensions} if extensions else None
+    for dirpath, dirnames, filenames in os.walk(root):
+        # Mutate dirnames in place so os.walk does not descend into skipped dirs.
+        dirnames[:] = [d for d in dirnames if not should_skip_dir(d)]
+        for fn in filenames:
+            if should_skip_file(fn):
+                continue
+            if ext_set is not None:
+                _, ext = os.path.splitext(fn)
+                if ext.lower() not in ext_set:
+                    continue
+            yield os.path.join(dirpath, fn)
+
+
 @dataclass
 class Finding:
     title: str
@@ -53,10 +143,16 @@ class Finding:
     attack_simulation: Optional[str] = None
     root_cause: Optional[str] = None       # WHY the vulnerability exists (underlying flaw)
     consequences: Optional[str] = None     # Business/security impact if exploited
+    confidence: Confidence = Confidence.MEDIUM  # Likelihood this is a true positive
 
     @property
     def score(self) -> int:
         return self.severity.score
+
+    @property
+    def weighted_score(self) -> float:
+        """Severity score weighted by confidence — useful for ranking."""
+        return self.severity.score * self.confidence.weight
 
 
 @dataclass
@@ -85,3 +181,22 @@ class BaseScanner:
 
     def scan(self) -> ScanResult:
         raise NotImplementedError
+
+    # ----- Shared helpers (used by subclasses) -----
+
+    def iter_files(self, extensions: Optional[Iterable[str]] = None) -> Iterable[str]:
+        """Yield source files under the target path with noise dirs filtered out."""
+        return iter_source_files(self.target_path, extensions=extensions)
+
+    @staticmethod
+    def is_test_or_example_path(path: str) -> bool:
+        """Heuristic: True if path looks like test/example/fixture code.
+
+        Scanners can downgrade severity or skip findings inside tests to
+        avoid flagging intentionally-bad sample code.
+        """
+        norm = path.replace("\\", "/").lower()
+        markers = ("/test/", "/tests/", "/__tests__/", "/spec/", "/specs/",
+                   "/example/", "/examples/", "/fixtures/", "/mocks/",
+                   "/sample/", "/samples/", "/demo/", "/demos/")
+        return any(m in norm for m in markers)
