@@ -1,3 +1,4 @@
+# security-guard: ignore-file
 """Live secret verification — TruffleHog-style.
 
 For each secret type that exposes a cheap, read-only "whoami" endpoint, we

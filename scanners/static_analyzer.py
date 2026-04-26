@@ -1,3 +1,4 @@
+# security-guard: ignore-file
 """
 Static code analyzer - context-aware vulnerability detection across multiple languages.
 
@@ -18,7 +19,7 @@ from dataclasses import dataclass
 from typing import Optional
 from .base import (
     BaseScanner, ScanResult, Finding, Severity, Category, Confidence,
-    should_skip_dir, should_skip_file,
+    should_skip_dir, should_skip_file, has_ignore_marker,
 )
 
 # ── Constants ──────────────────────────────────────────────────────────────
@@ -1210,6 +1211,10 @@ class StaticAnalyzer(BaseScanner):
                 if ext in BINARY_EXTENSIONS:
                     continue
                 if ext not in ext_index:
+                    continue
+                # Skip files that declare the Security Guard ignore marker
+                # (used inside our own pattern-definition files).
+                if has_ignore_marker(fpath):
                     continue
 
                 try:

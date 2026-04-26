@@ -1,3 +1,4 @@
+# security-guard: ignore-file
 """
 Configuration Auditor — detects security misconfigurations across project files.
 
@@ -18,7 +19,7 @@ import json
 import os
 import re
 import time
-from .base import BaseScanner, ScanResult, Finding, Severity, Category
+from .base import BaseScanner, ScanResult, Finding, Severity, Category, has_ignore_marker
 
 SKIP_DIRS = {
     "node_modules", ".git", "__pycache__", ".venv", "venv", "env",
@@ -30,6 +31,11 @@ MAX_FILE_SIZE = 500_000
 def _read(path: str) -> str | None:
     try:
         if os.path.getsize(path) > MAX_FILE_SIZE:
+            return None
+        # Honor the Security Guard ignore marker — applied to our own pattern
+        # files so scanning the tool's source does not flag every embedded
+        # regex / example payload as a real vulnerability.
+        if has_ignore_marker(path):
             return None
         with open(path, "r", encoding="utf-8", errors="ignore") as f:
             return f.read()
@@ -629,6 +635,8 @@ class ConfigAuditor(BaseScanner):
                 if ext not in {".py", ".js", ".ts", ".java", ".go", ".yml", ".yaml"}:
                     continue
                 fpath = os.path.join(root, fname)
+                if has_ignore_marker(fpath):
+                    continue
                 content = _read(fpath) or ""
                 rel = os.path.relpath(fpath, self.target_path)
                 lines = content.splitlines()
@@ -637,6 +645,11 @@ class ConfigAuditor(BaseScanner):
                 for i, line in enumerate(lines, 1):
                     stripped = line.strip()
                     if stripped.startswith(("#", "//")):
+                        continue
+                    # Skip CVE / advisory data lines that quote version-like strings
+                    # (e.g., "7.0.8.4" as a fixed-version marker) — these are not
+                    # network IPs and create noisy false positives.
+                    if "CVE-" in line or "GHSA-" in line:
                         continue
                     for m in ip_pat.finditer(line):
                         ip = m.group(1)

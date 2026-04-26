@@ -107,6 +107,34 @@ def should_skip_file(filename: str) -> bool:
     return any(lower.endswith(suf) for suf in SKIP_FILE_SUFFIXES)
 
 
+# Files containing this marker in their first ~2KB are skipped by every
+# scanner. We use it inside Security Guard's own pattern-definition files so
+# that scanning the tool's own source does not flag every embedded regex /
+# example payload as a real vulnerability. Apply sparingly — it disables ALL
+# detection for the file.
+IGNORE_FILE_MARKER = "security-guard: ignore-file"
+
+
+def has_ignore_marker(path: str) -> bool:
+    """True if `path` declares it should be skipped by Security Guard.
+
+    Reads only the first 2KB so the cost is bounded even on very large files.
+    Returns False on any read error so unreadable files still go through the
+    normal scanning path (which already handles them defensively).
+    """
+    try:
+        with open(path, "rb") as f:
+            head = f.read(2048)
+        return IGNORE_FILE_MARKER.encode("ascii") in head
+    except OSError:
+        return False
+
+
+def should_skip_source(fpath: str) -> bool:
+    """Combined check: filename-based skip OR file declares ignore marker."""
+    return should_skip_file(os.path.basename(fpath)) or has_ignore_marker(fpath)
+
+
 def iter_source_files(
     root: str,
     extensions: Optional[Iterable[str]] = None,
@@ -126,7 +154,10 @@ def iter_source_files(
                 _, ext = os.path.splitext(fn)
                 if ext.lower() not in ext_set:
                     continue
-            yield os.path.join(dirpath, fn)
+            full = os.path.join(dirpath, fn)
+            if has_ignore_marker(full):
+                continue
+            yield full
 
 
 @dataclass

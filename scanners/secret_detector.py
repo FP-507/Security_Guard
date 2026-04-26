@@ -1,3 +1,4 @@
+# security-guard: ignore-file
 """
 Secret Detector — finds API keys, tokens, passwords, and high-entropy strings.
 
@@ -16,7 +17,7 @@ import re
 import time
 from .base import (
     BaseScanner, ScanResult, Finding, Severity, Category, Confidence,
-    should_skip_dir, should_skip_file,
+    should_skip_dir, should_skip_file, has_ignore_marker,
 )
 from core.secret_verifiers import verify as verify_secret_live
 
@@ -509,6 +510,8 @@ class SecretDetector(BaseScanner):
                 if ext in BINARY_EXTENSIONS:
                     continue
                 if ext not in SCAN_EXTENSIONS and fname not in HIGH_RISK_FILES and not fname.startswith(".env"):
+                    continue
+                if has_ignore_marker(fpath):
                     continue
 
                 try:

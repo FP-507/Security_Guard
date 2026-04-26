@@ -27,6 +27,13 @@ sg_github_*/
 secrets.yml
 secrets.yaml
 secrets.json
+*.key
+*.pem
+*.p12
+*.pfx
+*.crt
+*.cer
+*.log
 
 # ── Internal Claude Code context (dev tool, not project docs) ─────────────────
 CLAUDE.md

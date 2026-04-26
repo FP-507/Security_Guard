@@ -1,3 +1,4 @@
+# security-guard: ignore-file
 """Insecure Defaults Scanner — based on Trail of Bits methodology.
 
 Detects fail-open patterns where the app runs insecurely when configuration
@@ -11,7 +12,7 @@ is missing, instead of crashing (fail-secure). Covers:
 import os
 import re
 import time
-from .base import BaseScanner, Category, Finding, ScanResult, Severity
+from .base import BaseScanner, Category, Finding, ScanResult, Severity, has_ignore_marker
 
 SKIP_DIRS = {
     "node_modules", ".git", "__pycache__", ".venv", "venv", "env",
@@ -70,6 +71,8 @@ class InsecureDefaultsScanner(BaseScanner):
                 if ext not in CODE_EXTS:
                     continue
                 fpath = os.path.join(root, fname)
+                if has_ignore_marker(fpath):
+                    continue
                 try:
                     if os.path.getsize(fpath) > MAX_FILE_SIZE:
                         continue

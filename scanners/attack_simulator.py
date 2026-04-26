@@ -1,3 +1,4 @@
+# security-guard: ignore-file
 """Attack simulator v2 — context-aware attack vector simulation."""
 
 import json
@@ -9,7 +10,7 @@ from typing import Optional
 
 from .base import (
     BaseScanner, Category, Finding, ScanResult, Severity, Confidence,
-    should_skip_dir, should_skip_file,
+    should_skip_dir, should_skip_file, has_ignore_marker,
 )
 
 
@@ -792,6 +793,8 @@ class AttackSimulator(BaseScanner):
                 if ext not in extensions:
                     continue
                 fpath = os.path.join(root, fname)
+                if has_ignore_marker(fpath):
+                    continue
                 try:
                     if os.path.getsize(fpath) > MAX_FILE_SIZE:
                         continue

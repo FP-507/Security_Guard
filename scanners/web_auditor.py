@@ -1,3 +1,4 @@
+# security-guard: ignore-file
 """Web Auditor — black-box security scanner for live websites.
 
 Performs passive and semi-active analysis without brute force or destructive tests:
