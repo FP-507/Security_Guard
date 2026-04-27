@@ -1,4 +1,13 @@
-"""Launcher that forces fresh import of app.py, bypassing .pyc cache."""
+"""Launcher that forces a fresh import of ``app.py`` — bypasses ``.pyc`` cache.
+
+Why this exists
+---------------
+On Windows, hot-reloading via Flask's debug mode sometimes serves stale code
+from ``__pycache__``. This launcher disables bytecode writing and reloads
+``app.py`` from source every run, guaranteeing the latest scanner / template
+changes are picked up. Always invoke ``python run.py`` instead of
+``python app.py`` during development.
+"""
 import sys, os, importlib, importlib.util
 
 # Force Python to reload source, not bytecode

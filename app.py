@@ -1,5 +1,26 @@
 #!/usr/bin/env python3
-"""Security Guard - Web Interface"""
+"""Security Guard — Flask web server.
+
+Serves the dashboard at ``/`` and exposes a small JSON API:
+
+    GET  /api/scanners        list registered code scanners
+    POST /api/scan            start a scan (local path | github URL | website URL)
+    GET  /api/status          poll progress while a scan runs
+    GET  /api/results         retrieve the JSON results of the last scan
+    GET  /api/export/pdf      download the bilingual PDF report (?lang=es|en)
+
+A single scan runs at a time in a background thread; ``scan_state`` is the
+shared progress/results record polled by the front-end.
+
+Three scan modes are auto-detected from the input:
+    - **local**  : a filesystem path
+    - **github** : any URL containing ``github.com/`` (uses :mod:`core.github_fetcher`)
+    - **web**    : any other ``http(s)://`` URL (uses :class:`scanners.WebAuditor`)
+
+GitHub mode supports private repositories via an optional Personal Access Token;
+:class:`core.github_fetcher.PrivateRepoError` is propagated to the UI as a clear
+"private repository" warning.
+"""
 
 import io
 import json

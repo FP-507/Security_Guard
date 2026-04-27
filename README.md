@@ -95,6 +95,17 @@ Results appear in real time with a progress bar. When the scan completes you
 can filter findings by severity, search by keyword, and download a PDF report
 in Spanish or English.
 
+#### Private GitHub repositories
+
+If you paste a URL to a **private** repository (or one that requires auth) the
+dashboard will show an inline warning telling you to provide a Personal Access
+Token. Generate a token at <https://github.com/settings/tokens> with the `repo`
+scope and paste it into the token field that appears in **GitHub Repo** mode.
+
+Security Guard performs a pre-flight check against the GitHub REST API, so the
+warning appears *before* a long failing clone — and your token is stripped from
+any subsequent error output.
+
 ### CLI (alternative)
 
 ```bash
@@ -216,6 +227,24 @@ CODE_SCANNERS = [
 
 No other files need to change. The scanner automatically appears in the
 dashboard toggles and runs as part of the scan pipeline.
+
+---
+
+## Excluding files from scanning
+
+Some files — typically the pattern definitions inside a security tool itself —
+contain example payloads that look exactly like real vulnerabilities. To
+prevent them from being flagged, add this magic comment near the top of the
+file (must appear in the first ~2 KB):
+
+```python
+# security-guard: ignore-file
+```
+
+Every scanner honors this marker. Use it sparingly — it disables **all**
+detection for the entire file. Security Guard's own scanner pattern files
+(`scanners/static_analyzer.py`, `scanners/secret_detector.py`, etc.) carry
+this marker so the tool can audit itself cleanly.
 
 ---
 

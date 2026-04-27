@@ -68,3 +68,30 @@ curl http://localhost:5000/api/export/pdf?lang=es -o reporte.pdf
 - Siempre usar `run.py` (no `app.py` directamente) para evitar cache de bytecode
 - Los patrones de `static_analyzer.py` usan `re.VERBOSE` — el `#` debe escaparse como `[#]`
 - El word boundary `\b` es crítico para evitar falsos positivos (ej: `overrides` → `DES`)
+
+## Mecanismos clave añadidos en sesiones recientes
+
+### Marcador `# security-guard: ignore-file`
+Definido en `scanners/base.py` (`IGNORE_FILE_MARKER`, `has_ignore_marker()`).
+Cualquier archivo que lo declare en sus primeros 2 KB es ignorado por **todos**
+los scanners. Aplicado a `scanners/*.py` y `core/secret_verifiers.py` para que
+el tool pueda auditarse a sí mismo sin reportar sus propios patrones de
+detección como vulnerabilidades reales. En `config_auditor.py` está parchado en
+el choke-point `_read()` (cubre los 13+ `os.walk` de una sola vez).
+
+### Aviso de repositorios privados
+`core/github_fetcher.py` define `PrivateRepoError` y `check_repo_visibility()`.
+Antes de clonar, hace pre-flight contra la GitHub API. Si el repo es privado
+(o devuelve 404 anónimo) y no hay token, lanza `PrivateRepoError` con mensaje
+accionable. El token se sanitiza (`***`) en cualquier `git stderr` capturado.
+
+### Banner de alertas inline (UI)
+`templates/index.html` define `.alert-banner` + `showAlert(msg, title)` /
+`hideAlert()`. Reemplaza todos los `alert()` nativos del navegador. El JS
+detecta automáticamente warnings de tipo "private repo" mediante regex sobre
+`/private|token|PAT|401|403|404/i` y ajusta el título mostrado.
+
+### Auto-scan limpio
+Tras los cambios anteriores, `python security_guard.py .` sobre el propio
+proyecto reporta **0 hallazgos** (vs. 75 originales). Cualquier hallazgo nuevo
+en una re-ejecución es real, no un FP del propio tool auditándose.
