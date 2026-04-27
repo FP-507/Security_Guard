@@ -48,6 +48,7 @@ from scanners import (
     WebAuditor,
 )
 from core.pdf_generator import generate_pdf
+from core.scoring import calculate_score, get_grade
 from scanners.base import Severity, ScanResult, Finding
 from core import github_fetcher
 
@@ -84,22 +85,7 @@ scan_state = {
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-def calculate_score(findings: list[dict]) -> float:
-    penalty = 0
-    for f in findings:
-        sev = f["severity"]
-        if sev == "CRITICAL":
-            penalty += 15
-        elif sev == "HIGH":
-            penalty += 8
-        elif sev == "MEDIUM":
-            penalty += 4
-        elif sev == "LOW":
-            penalty += 2
-        else:
-            penalty += 0.5
-    return round(max(0, 100 - penalty), 1)
-
+# Score & grade come from core.scoring (single source of truth) — see imports.
 
 def finding_to_dict(f: Finding) -> dict:
     return {
@@ -119,7 +105,88 @@ def finding_to_dict(f: Finding) -> dict:
     }
 
 
-# ── Scan thread ───────────────────────────────────────────────────────────────
+# ── Scan worker ───────────────────────────────────────────────────────────────
+def _execute_scan(
+    display_target: str,
+    scan_path: str,
+    scanner_keys: list[str],
+    scan_type: str,
+) -> None:
+    """Run the selected scanners and write results into ``scan_state``.
+
+    Pure scan loop — does **not** touch ``scan_state["running"]`` or perform
+    any cleanup. Intended to be called from a wrapper that owns the lifecycle
+    (see :func:`run_scan_thread` / :func:`run_github_scan_thread`).
+    """
+    registry = {s[0]: s for s in ALL_SCANNERS}
+    selected = [registry[k] for k in scanner_keys if k in registry]
+
+    all_findings: list[dict] = []
+    scanner_results: list[dict] = []
+    total = len(selected) or 1  # avoid div-by-zero on empty selection
+
+    for idx, (key, name, cls, desc) in enumerate(selected):
+        scan_state["current_scanner"] = name
+        scan_state["progress"] = int((idx / total) * 100)
+
+        try:
+            scanner = cls(scan_path)
+            result = scanner.scan()
+        except Exception as scanner_err:
+            # One scanner crashing must not abort the whole pipeline.
+            scanner_results.append({
+                "key": key, "name": name, "description": desc,
+                "files_scanned": 0, "findings_count": 0, "time": 0,
+                "error": str(scanner_err),
+            })
+            continue
+
+        findings_dicts = [finding_to_dict(f) for f in result.findings]
+        all_findings.extend(findings_dicts)
+        scanner_results.append({
+            "key": key,
+            "name": name,
+            "description": desc,
+            "files_scanned": result.files_scanned,
+            "findings_count": len(result.findings),
+            "time": round(result.scan_time_seconds, 2),
+        })
+
+    # Score & grade come from core.scoring — same numbers as the CLI / PDF.
+    score = calculate_score(all_findings)
+    grade = get_grade(score)
+
+    severity_counts = Counter(f["severity"] for f in all_findings)
+    category_counts = Counter(f["category"] for f in all_findings)
+    # Most severe first — drives the order shown in the dashboard.
+    all_findings.sort(key=lambda f: f["severity_score"], reverse=True)
+
+    scan_state["results"] = {
+        "target": display_target,
+        "scan_type": scan_type,
+        "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "score": score,
+        "grade": grade,
+        "total_findings": len(all_findings),
+        "severity_counts": {sev: severity_counts.get(sev, 0)
+                             for sev in ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO")},
+        "category_counts": dict(category_counts.most_common()),
+        "scanners": scanner_results,
+        "findings": all_findings,
+    }
+    scan_state["progress"] = 100
+    scan_state["current_scanner"] = "Complete"
+
+
+def _reset_state(scan_type: str) -> None:
+    """Initialize ``scan_state`` for a new scan run."""
+    scan_state["running"] = True
+    scan_state["progress"] = 0
+    scan_state["error"] = None
+    scan_state["results"] = None
+    scan_state["scan_type"] = scan_type
+
+
 def run_scan_thread(
     display_target: str,
     scan_path: str,
@@ -127,98 +194,10 @@ def run_scan_thread(
     scan_type: str = "local",
     tmp_dir: str = None,
 ):
-    """
-    Core scan worker.
-
-    Args:
-        display_target: Human-readable name shown in results (URL, repo slug, or path basename)
-        scan_path:      Actual path or URL passed to each scanner's constructor
-        scanner_keys:   Which scanners to run (e.g. ["static","secrets","web"])
-        scan_type:      "local" | "github" | "web"
-        tmp_dir:        Temp directory to delete after scan (GitHub clones)
-    """
-    global scan_state
+    """Local-path / website worker: own state lifecycle, then delegate scan loop."""
+    _reset_state(scan_type)
     try:
-        scan_state["running"] = True
-        scan_state["progress"] = 0
-        scan_state["error"] = None
-        scan_state["results"] = None
-        scan_state["scan_type"] = scan_type
-
-        registry = {s[0]: s for s in ALL_SCANNERS}
-        selected = [registry[k] for k in scanner_keys if k in registry]
-
-        all_findings = []
-        scanner_results = []
-        total = len(selected)
-
-        for idx, (key, name, cls, desc) in enumerate(selected):
-            scan_state["current_scanner"] = name
-            scan_state["progress"] = int((idx / total) * 100)
-
-            try:
-                scanner = cls(scan_path)
-                result = scanner.scan()
-            except Exception as scanner_err:
-                # Don't crash the whole scan if one scanner fails
-                scanner_results.append({
-                    "key": key,
-                    "name": name,
-                    "description": desc,
-                    "files_scanned": 0,
-                    "findings_count": 0,
-                    "time": 0,
-                    "error": str(scanner_err),
-                })
-                continue
-
-            findings_dicts = [finding_to_dict(f) for f in result.findings]
-            all_findings.extend(findings_dicts)
-
-            scanner_results.append({
-                "key": key,
-                "name": name,
-                "description": desc,
-                "files_scanned": result.files_scanned,
-                "findings_count": len(result.findings),
-                "time": round(result.scan_time_seconds, 2),
-            })
-
-        score = calculate_score(all_findings)
-        grade = (
-            "A" if score >= 90 else
-            "B" if score >= 80 else
-            "C" if score >= 70 else
-            "D" if score >= 60 else "F"
-        )
-
-        severity_counts = Counter(f["severity"] for f in all_findings)
-        category_counts = Counter(f["category"] for f in all_findings)
-
-        # Sort findings by severity score descending
-        all_findings.sort(key=lambda f: f["severity_score"], reverse=True)
-
-        scan_state["results"] = {
-            "target": display_target,
-            "scan_type": scan_type,
-            "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "score": score,
-            "grade": grade,
-            "total_findings": len(all_findings),
-            "severity_counts": {
-                "CRITICAL": severity_counts.get("CRITICAL", 0),
-                "HIGH":     severity_counts.get("HIGH", 0),
-                "MEDIUM":   severity_counts.get("MEDIUM", 0),
-                "LOW":      severity_counts.get("LOW", 0),
-                "INFO":     severity_counts.get("INFO", 0),
-            },
-            "category_counts": dict(category_counts.most_common()),
-            "scanners": scanner_results,
-            "findings": all_findings,
-        }
-        scan_state["progress"] = 100
-        scan_state["current_scanner"] = "Complete"
-
+        _execute_scan(display_target, scan_path, scanner_keys, scan_type)
     except Exception as e:
         scan_state["error"] = str(e)
     finally:
@@ -228,121 +207,28 @@ def run_scan_thread(
 
 
 def run_github_scan_thread(url: str, scanner_keys: list[str], token: str = None):
-    """Clone a GitHub repo then run code scanners on it."""
-    global scan_state
+    """GitHub worker: clone first (with private-repo detection), then scan."""
+    _reset_state("github")
     tmp_dir = None
     try:
-        scan_state["running"] = True
-        scan_state["progress"] = 0
-        scan_state["error"] = None
-        scan_state["results"] = None
-        scan_state["scan_type"] = "github"
-
-        # Parse display name before cloning
         info = github_fetcher.parse_github_url(url)
         display_target = info["display"]
 
-        # Clone with progress updates
+        # Forward git/clone progress messages into the same state slot the
+        # scan loop will later update with scanner names.
         def on_progress(msg: str):
             scan_state["current_scanner"] = msg
 
         scan_state["current_scanner"] = "Cloning repository..."
         tmp_dir = github_fetcher.clone_repo(url, token=token, progress_callback=on_progress)
 
-        # Hand off to the core scan worker (won't re-set running/error/results)
-        _run_scan_inner(display_target, tmp_dir, scanner_keys, "github", tmp_dir)
-        tmp_dir = None  # ownership transferred; _run_scan_inner will clean up
-
+        _execute_scan(display_target, tmp_dir, scanner_keys, "github")
     except Exception as e:
         scan_state["error"] = str(e)
+    finally:
         if tmp_dir:
             github_fetcher.cleanup_temp_dir(tmp_dir)
-    finally:
         scan_state["running"] = False
-
-
-def _run_scan_inner(
-    display_target: str,
-    scan_path: str,
-    scanner_keys: list[str],
-    scan_type: str,
-    tmp_dir: str = None,
-):
-    """
-    Same logic as run_scan_thread but does NOT touch scan_state["running"].
-    Called by run_github_scan_thread after cloning is done.
-    """
-    global scan_state
-    try:
-        registry = {s[0]: s for s in ALL_SCANNERS}
-        selected = [registry[k] for k in scanner_keys if k in registry]
-
-        all_findings = []
-        scanner_results = []
-        total = len(selected)
-
-        for idx, (key, name, cls, desc) in enumerate(selected):
-            scan_state["current_scanner"] = name
-            scan_state["progress"] = int((idx / total) * 100)
-
-            try:
-                scanner = cls(scan_path)
-                result = scanner.scan()
-            except Exception as scanner_err:
-                scanner_results.append({
-                    "key": key, "name": name, "description": desc,
-                    "files_scanned": 0, "findings_count": 0, "time": 0,
-                    "error": str(scanner_err),
-                })
-                continue
-
-            findings_dicts = [finding_to_dict(f) for f in result.findings]
-            all_findings.extend(findings_dicts)
-            scanner_results.append({
-                "key": key,
-                "name": name,
-                "description": desc,
-                "files_scanned": result.files_scanned,
-                "findings_count": len(result.findings),
-                "time": round(result.scan_time_seconds, 2),
-            })
-
-        score = calculate_score(all_findings)
-        grade = (
-            "A" if score >= 90 else
-            "B" if score >= 80 else
-            "C" if score >= 70 else
-            "D" if score >= 60 else "F"
-        )
-
-        severity_counts = Counter(f["severity"] for f in all_findings)
-        category_counts = Counter(f["category"] for f in all_findings)
-        all_findings.sort(key=lambda f: f["severity_score"], reverse=True)
-
-        scan_state["results"] = {
-            "target": display_target,
-            "scan_type": scan_type,
-            "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "score": score,
-            "grade": grade,
-            "total_findings": len(all_findings),
-            "severity_counts": {
-                "CRITICAL": severity_counts.get("CRITICAL", 0),
-                "HIGH":     severity_counts.get("HIGH", 0),
-                "MEDIUM":   severity_counts.get("MEDIUM", 0),
-                "LOW":      severity_counts.get("LOW", 0),
-                "INFO":     severity_counts.get("INFO", 0),
-            },
-            "category_counts": dict(category_counts.most_common()),
-            "scanners": scanner_results,
-            "findings": all_findings,
-        }
-        scan_state["progress"] = 100
-        scan_state["current_scanner"] = "Complete"
-
-    finally:
-        if tmp_dir:
-            github_fetcher.cleanup_temp_dir(tmp_dir)
 
 
 # ── Flask routes ──────────────────────────────────────────────────────────────

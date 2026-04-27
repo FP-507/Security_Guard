@@ -1,10 +1,16 @@
-﻿"""PDF Report Generator - Bilingual (ES/EN) security audit report using ReportLab."""
+﻿"""PDF Report Generator — Bilingual (ES/EN) security audit report using ReportLab.
+
+Score and per-severity penalties come from :mod:`core.scoring` so the values
+shown in the PDF table always match the JSON dashboard and CLI output.
+"""
 
 import io
 import os
 from datetime import datetime
 from collections import Counter
 from xml.sax.saxutils import escape as xml_escape
+
+from .scoring import PENALTIES
 
 
 def esc(text: str) -> str:
@@ -537,21 +543,26 @@ def generate_pdf(scan_data: dict, lang: str = "es") -> bytes:
     story.append(Paragraph(t["sec_findings_dist"], styles["subsection"]))
 
     sev_rows = []
-    total_penalty = 0
-    for sev, penalty_per in [("CRITICAL", 15), ("HIGH", 8), ("MEDIUM", 4), ("LOW", 2), ("INFO", 0)]:
+    total_penalty = 0.0
+    # Always pull penalties from the canonical table — never hard-code here.
+    for sev in ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"):
+        penalty_per = PENALTIES[sev]
         count = sev_counts.get(sev, 0)
         pen = count * penalty_per
         total_penalty += pen
         color = SEV_COLORS[sev]
         sev_p = ParagraphStyle("sp", fontSize=8, textColor=color,
                                fontName="Helvetica-Bold")
+        # Show pretty integers when the penalty is whole (CRIT/HIGH/MED/LOW)
+        # and a single decimal for fractional ones (INFO at 0.5).
+        pen_str = f"-{pen:g} pts"
         sev_rows.append([
-            Paragraph(sev, sev_p), str(count), f"-{pen} pts"
+            Paragraph(sev, sev_p), str(count), pen_str
         ])
     sev_rows.append([
         Paragraph("TOTAL", ParagraphStyle("tot", fontSize=8, textColor=C_WHITE, fontName="Helvetica-Bold")),
         str(len(findings)),
-        f"-{total_penalty} pts",
+        f"-{total_penalty:g} pts",
     ])
 
     sev_table = dark_table(

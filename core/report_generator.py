@@ -1,4 +1,8 @@
-"""Report generator - produces console and HTML reports with security score."""
+"""Report generator — produces console and HTML reports with security score.
+
+Score and grade come from :mod:`core.scoring` (single source of truth) so the
+CLI, web dashboard and PDF report always agree.
+"""
 
 import html
 import os
@@ -6,41 +10,14 @@ from datetime import datetime
 from collections import Counter
 
 from scanners.base import Finding, ScanResult, Severity, Category
+from .scoring import calculate_score, get_grade
 
 
-# ─── Security Score Calculation ────────────────────────────────────────────
-
+# Backwards-compatible alias — older callers imported this name from here.
+# New code should import :func:`core.scoring.calculate_score` directly.
 def calculate_security_score(all_findings: list[Finding]) -> float:
-    """Calculate security score (0-100) based on findings."""
-    if not all_findings:
-        return 100.0
-
-    penalty = 0
-    for f in all_findings:
-        if f.severity == Severity.CRITICAL:
-            penalty += 15
-        elif f.severity == Severity.HIGH:
-            penalty += 8
-        elif f.severity == Severity.MEDIUM:
-            penalty += 4
-        elif f.severity == Severity.LOW:
-            penalty += 2
-        elif f.severity == Severity.INFO:
-            penalty += 0.5
-
-    return round(max(0, 100 - penalty), 1)
-
-
-def get_grade(score: float) -> str:
-    if score >= 90:
-        return "A"
-    if score >= 80:
-        return "B"
-    if score >= 70:
-        return "C"
-    if score >= 60:
-        return "D"
-    return "F"
+    """Compatibility wrapper around :func:`core.scoring.calculate_score`."""
+    return calculate_score(all_findings)
 
 
 # ─── Console Report ───────────────────────────────────────────────────────
