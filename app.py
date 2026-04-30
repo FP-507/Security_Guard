@@ -38,40 +38,20 @@ from flask import Flask, render_template, request, jsonify, send_file
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from scanners import (
-    StaticAnalyzer,
-    SecretDetector,
-    DependencyScanner,
-    ConfigAuditor,
-    AttackSimulator,
-    InsecureDefaultsScanner,
-    WebAuditor,
-)
 from core.pdf_generator import generate_pdf
 from core.scoring import calculate_score, get_grade
 from scanners.base import Severity, ScanResult, Finding
+from scanners.registry import SCANNERS, by_key, code_scanners, web_scanners
 from core import github_fetcher
 
 app = Flask(__name__)
 
-# ── Scanner registry ──────────────────────────────────────────────────────────
-# Code scanners: for local paths and cloned GitHub repos
-CODE_SCANNERS = [
-    ("static",   "Static Code Analyzer",               StaticAnalyzer,          "Analyzes code for injection, XSS, crypto, and other vulnerability patterns"),
-    ("secrets",  "Secret Detector",                    SecretDetector,          "Finds API keys, tokens, passwords, and high-entropy strings"),
-    ("deps",     "Dependency Scanner",                  DependencyScanner,       "Checks packages against known CVE databases"),
-    ("config",   "Config Auditor",                      ConfigAuditor,           "Reviews Docker, CI/CD, .gitignore, SSL, and server configs"),
-    ("defaults", "Insecure Defaults (Trail of Bits)",   InsecureDefaultsScanner, "Detects fail-open patterns: fallback secrets, auth disabled by default, weak crypto in context"),
-    ("attacks",  "Attack Simulator",                    AttackSimulator,         "Simulates SQL injection, XSS, CSRF, IDOR, SSRF, supply chain, and more"),
-]
-
-# Web scanner: for live websites
-WEB_SCANNERS = [
-    ("web", "Web Auditor", WebAuditor, "Black-box web scanner: security headers, cookies, CORS, XSS, open redirect, secret leakage, and more"),
-]
-
-# Combined registry used by /api/scanners
-ALL_SCANNERS = CODE_SCANNERS + WEB_SCANNERS
+# Scanner metadata is owned by ``scanners.registry`` (single source of truth
+# shared with the CLI). These names are kept as locals for backwards
+# compatibility with anything that imports them.
+ALL_SCANNERS = SCANNERS
+CODE_SCANNERS = code_scanners()
+WEB_SCANNERS = web_scanners()
 
 # ── In-memory scan state ──────────────────────────────────────────────────────
 scan_state = {
@@ -118,14 +98,15 @@ def _execute_scan(
     any cleanup. Intended to be called from a wrapper that owns the lifecycle
     (see :func:`run_scan_thread` / :func:`run_github_scan_thread`).
     """
-    registry = {s[0]: s for s in ALL_SCANNERS}
+    registry = by_key()
     selected = [registry[k] for k in scanner_keys if k in registry]
 
     all_findings: list[dict] = []
     scanner_results: list[dict] = []
     total = len(selected) or 1  # avoid div-by-zero on empty selection
 
-    for idx, (key, name, cls, desc) in enumerate(selected):
+    for idx, entry in enumerate(selected):
+        key, name, cls, desc = entry.key, entry.name, entry.cls, entry.description
         scan_state["current_scanner"] = name
         scan_state["progress"] = int((idx / total) * 100)
 
@@ -312,8 +293,8 @@ def scan_results():
 def list_scanners():
     """Return code scanners (for the toggle UI). Web scanner is automatic."""
     return jsonify([
-        {"key": k, "name": n, "description": d}
-        for k, n, _, d in CODE_SCANNERS
+        {"key": s.key, "name": s.name, "description": s.description}
+        for s in CODE_SCANNERS
     ])
 
 

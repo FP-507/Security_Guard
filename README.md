@@ -230,6 +230,26 @@ dashboard toggles and runs as part of the scan pipeline.
 
 ---
 
+## Running the test suite
+
+The project ships with a small **stdlib-only** test suite (no extra
+dependencies needed):
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+Coverage focuses on the contracts that are easy to break and hard to notice:
+
+- `tests/test_scoring.py` — pins the canonical penalty table and grade thresholds
+- `tests/test_registry.py` — verifies every scanner is properly registered, keys are unique, classes extend `BaseScanner`
+- `tests/test_github_fetcher.py` — URL parsing + GitHub API visibility classification (network calls are mocked, so the suite runs offline)
+- `tests/test_base.py` — file-skip helpers and the `# security-guard: ignore-file` marker (including the 2 KB anti-tamper window)
+
+Run before every commit — 45 tests complete in well under a second.
+
+---
+
 ## Excluding files from scanning
 
 Some files — typically the pattern definitions inside a security tool itself —

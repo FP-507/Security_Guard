@@ -95,3 +95,22 @@ detecta automáticamente warnings de tipo "private repo" mediante regex sobre
 Tras los cambios anteriores, `python security_guard.py .` sobre el propio
 proyecto reporta **0 hallazgos** (vs. 75 originales). Cualquier hallazgo nuevo
 en una re-ejecución es real, no un FP del propio tool auditándose.
+
+### Registro central de scanners — `scanners/registry.py`
+Única fuente de verdad para la lista de scanners (clave, nombre, clase,
+descripción, kind="code"|"web"). Importado por `app.py` (dashboard) y por
+`security_guard.py` (CLI). Eliminó drift previo donde el CLI carecía de
+`defaults` y `web`. Helpers: `code_scanners()`, `web_scanners()`, `by_key()`.
+
+### Modelo de scoring centralizado — `core/scoring.py`
+`PENALTIES`, `GRADE_THRESHOLDS`, `calculate_score()`, `get_grade()`. Antes
+duplicado en 3 archivos con valores divergentes (INFO=0.5 en CLI/web vs 0 en
+PDF). Ahora una sola tabla, una sola función. Acepta tanto `Finding` como
+`dict`.
+
+### Tests stdlib — `tests/`
+Suite con 45 tests en 4 módulos (scoring, registry, github_fetcher con mocks,
+base). Sin dependencias extra. Ejecutar con
+`python -m unittest discover -s tests -v`. Todos los archivos de test llevan
+`# security-guard: ignore-file` para no contaminar el self-scan con sus
+fixtures de payloads.

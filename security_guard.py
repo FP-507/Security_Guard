@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """
-Security Guard - Comprehensive Project Security Analyzer
-=========================================================
+Security Guard — Comprehensive Project Security Analyzer (CLI)
+==============================================================
 
 Analyzes a project directory for security vulnerabilities, simulates attacks,
 and provides actionable remediation recommendations to reach 90% security.
+
+The list of available scanners (and their short ids) comes from
+``scanners.registry`` so the CLI never drifts from the web dashboard.
 
 Usage:
     python security_guard.py <project_path> [options]
@@ -12,9 +15,11 @@ Usage:
 Options:
     --html           Generate HTML report (saved to reports/)
     --no-color       Disable colored output
-    --scanners       Comma-separated list of scanners to run:
-                     static,secrets,dependencies,config,attacks (default: all)
-    --severity       Minimum severity to report: critical,high,medium,low,info (default: info)
+    --scanners       Comma-separated list of scanner keys to run, or ``all``
+                     (default: all code scanners — the ``web`` scanner is
+                     skipped because it expects a URL, not a path)
+    --severity       Minimum severity to report: critical,high,medium,low,info
+                     (default: info)
     -o, --output     Output path for HTML report (default: reports/report_TIMESTAMP.html)
     -q, --quiet      Only show summary, not individual findings
     -h, --help       Show this help message
@@ -35,20 +40,13 @@ if sys.platform == "win32":
 # Add parent dir to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from scanners import (
-    StaticAnalyzer,
-    SecretDetector,
-    DependencyScanner,
-    ConfigAuditor,
-    AttackSimulator,
-)
 from scanners.base import Severity, ScanResult
+from scanners.registry import SCANNERS, by_key, code_scanners
 from core.report_generator import (
     print_console_report,
     generate_html_report,
-    calculate_security_score,
-    get_grade,
 )
+from core.scoring import calculate_score, get_grade
 
 
 BANNER = r"""
@@ -72,12 +70,11 @@ BANNER = r"""
   ╚═══════════════════════════════════════════════════════════╝
 """
 
-SCANNER_MAP = {
-    "static": ("Static Code Analyzer", StaticAnalyzer),
-    "secrets": ("Secret Detector", SecretDetector),
-    "dependencies": ("Dependency Scanner", DependencyScanner),
-    "config": ("Configuration Auditor", ConfigAuditor),
-    "attacks": ("Attack Simulator", AttackSimulator),
+# Scanners come from the canonical registry. We accept the modern short keys
+# (``static``, ``secrets``, ``deps``, ``config``, ``defaults``, ``attacks``,
+# ``web``) plus a couple of legacy aliases so old shell scripts keep working.
+LEGACY_ALIASES = {
+    "dependencies": "deps",     # historical CLI key
 }
 
 SEVERITY_MAP = {
@@ -90,6 +87,8 @@ SEVERITY_MAP = {
 
 
 def parse_args():
+    # Build the help string from the live registry so it can never lie.
+    available = ", ".join(s.key for s in code_scanners())
     parser = argparse.ArgumentParser(
         description="Security Guard - Comprehensive Project Security Analyzer",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -101,7 +100,7 @@ def parse_args():
     parser.add_argument(
         "--scanners",
         default="all",
-        help="Comma-separated scanners: static,secrets,dependencies,config,attacks (default: all)",
+        help=f"Comma-separated scanners (default: all). Available: {available}",
     )
     parser.add_argument(
         "--severity",
@@ -157,17 +156,27 @@ def main():
     print(f"  Date:   {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print()
 
-    # Determine which scanners to run
+    # Determine which scanners to run.
+    # Default ("all") = every "code" scanner; the "web" scanner needs a URL
+    # and is silently excluded when the input is a filesystem path.
+    registry = by_key()
     if args.scanners == "all":
-        scanners_to_run = list(SCANNER_MAP.items())
+        scanners_to_run = code_scanners()
     else:
-        scanner_names = [s.strip() for s in args.scanners.split(",")]
+        requested = [LEGACY_ALIASES.get(s.strip(), s.strip())
+                     for s in args.scanners.split(",")]
         scanners_to_run = []
-        for name in scanner_names:
-            if name in SCANNER_MAP:
-                scanners_to_run.append((name, SCANNER_MAP[name]))
-            else:
-                print(f"  ⚠ Unknown scanner: {name}")
+        for scanner_id in requested:
+            entry = registry.get(scanner_id)
+            if entry is None:
+                print(f"  ⚠ Unknown scanner: {scanner_id} "
+                      f"(available: {', '.join(registry)})")
+                continue
+            if entry.kind == "web":
+                print(f"  ⚠ Skipping '{scanner_id}': the web auditor expects "
+                      f"a URL, not a filesystem path.")
+                continue
+            scanners_to_run.append(entry)
 
     if not scanners_to_run:
         print("  ✗ No valid scanners specified.")
@@ -178,8 +187,8 @@ def main():
     scan_results = []
     total_start = time.time()
 
-    for key, (display_name, scanner_class) in scanners_to_run:
-        result = run_scanner(display_name, scanner_class, target_path)
+    for entry in scanners_to_run:
+        result = run_scanner(entry.name, entry.cls, target_path)
         scan_results.append(result)
 
     total_time = time.time() - total_start
@@ -193,10 +202,10 @@ def main():
     if not args.quiet:
         score, grade = print_console_report(scan_results, target_path)
     else:
-        all_findings = []
-        for sr in scan_results:
-            all_findings.extend(sr.findings)
-        score = calculate_security_score(all_findings)
+        # Quiet mode: just one summary line. Score uses the same canonical
+        # function as the dashboard and PDF (core.scoring).
+        all_findings = [f for sr in scan_results for f in sr.findings]
+        score = calculate_score(all_findings)
         grade = get_grade(score)
         print(f"  Score: {score}/100 (Grade: {grade}) | Findings: {len(all_findings)}")
 

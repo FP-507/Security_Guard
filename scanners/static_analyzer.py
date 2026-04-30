@@ -760,8 +760,11 @@ VULNERABILITY_PATTERNS: list[VulnPattern] = [
     VulnPattern(
         id="sensitive_logging",
         title="Sensitive Data Logged",
+        # Word boundaries on the sensitive keyword list are critical: without
+        # them "Skip**pin**g", "to**ken**ize", "**secret**ariat" etc. trigger
+        # false positives on innocuous log lines.
         patterns=_r(
-            r"""(?:log(?:ger)?\.(?:debug|info|warn|error|critical)|print|console\.(?:log|warn|error))\s*\([^)]*(?:password|passwd|token|secret|api.?key|credit.?card|ssn|cvv|pin)""",
+            r"""(?:log(?:ger)?\.(?:debug|info|warn|error|critical)|print|console\.(?:log|warn|error))\s*\([^)]*\b(?:password|passwd|token|secret|api.?key|credit.?card|ssn|cvv|pin)\b""",
         ),
         suppress=_r(r"""log.*mask|log.*redact|log.*censor|log.*\*\*"""),
         extensions={".py", ".js", ".ts", ".java", ".rb", ".go", ".php"},
